@@ -1,5 +1,9 @@
 # LibreChat
 
+## Role
+
+You are a senior full-stack engineer contributing to LibreChat — a multi-provider AI chat platform (think ChatGPT but self-hosted). You write TypeScript-first, production-quality code that follows every convention in this file. You think before acting, prefer small focused changes, and never guess at architecture decisions.
+
 ## Project Overview
 
 LibreChat is a monorepo with the following key workspaces:
@@ -24,6 +28,54 @@ The source code for `@librechat/agents` (major backend dependency, same team) is
 - Database-specific shared logic goes in `/packages/data-schemas`.
 - Frontend/backend shared API logic (endpoints, types, data-service) goes in `/packages/data-provider`.
 - Build data-provider from project root: `npm run build:data-provider`.
+
+---
+
+## Project Structure
+
+```
+/
+├── api/                        # Legacy JS Express server (minimize changes)
+│   ├── server/
+│   │   ├── routes/             # API route handlers
+│   │   ├── controllers/        # Request handlers
+│   │   ├── middleware/         # Auth, validation, rate limiting
+│   │   └── services/           # Business logic, LLM integrations
+│   ├── models/                 # Mongoose schemas (legacy, prefer data-schemas)
+│   └── test/                   # Backend unit tests
+├── packages/
+│   ├── api/src/                # New TypeScript backend modules
+│   │   ├── mcp/                # Model Context Protocol
+│   │   ├── auth/               # Authentication domain
+│   │   ├── endpoints/          # LLM endpoint integrations
+│   │   ├── agents/             # Agent management
+│   │   ├── cache/              # Redis/memory caching
+│   │   └── tools/              # Tool/plugin handling
+│   ├── data-schemas/src/       # Shared Mongoose models & schemas
+│   │   ├── models/             # Data models (User, Message, Conversation, etc.)
+│   │   └── schema/             # Schema definitions with validation
+│   ├── data-provider/src/      # Shared API types & React Query hooks
+│   │   ├── api-endpoints.ts    # All API endpoint URLs
+│   │   ├── data-service.ts     # Core API client
+│   │   ├── keys.ts             # QueryKeys and MutationKeys
+│   │   ├── types/              # Shared TypeScript types
+│   │   └── react-query/        # React Query hooks
+│   └── client/src/             # Shared React component library
+├── client/src/                 # Frontend SPA
+│   ├── components/             # Feature components (Chat, Auth, Agents, etc.)
+│   ├── hooks/                  # Custom React hooks
+│   ├── store/                  # Jotai global state atoms
+│   ├── Providers/              # React context providers
+│   ├── data-provider/          # API integration layer (wraps packages/data-provider)
+│   │   └── [Feature]/
+│   │       ├── queries.ts      # React Query hooks for feature
+│   │       └── index.ts        # Re-exports
+│   └── locales/en/             # English i18n strings (only file to edit)
+├── e2e/                        # Playwright end-to-end tests
+├── .env.example                # All environment variable documentation
+├── librechat.example.yaml      # App configuration template
+└── AGENTS.md                   # This file
+```
 
 ---
 
@@ -136,10 +188,36 @@ Multi-line imports count total character length across all lines. Consolidate va
 | `npm run frontend` | Build all compiled code sequentially (legacy fallback) |
 | `npm run frontend:dev` | Start frontend dev server with HMR (port 3090, requires backend running) |
 | `npm run build:data-provider` | Rebuild `packages/data-provider` after changes |
+| `npm run lint` | Run ESLint across all workspaces |
+| `npm run test:api` | Run backend unit tests |
+| `npm run test:client` | Run frontend unit tests |
+| `npm run test:packages:api` | Run packages/api tests |
+| `npm run test:packages:data-provider` | Run packages/data-provider tests |
+| `npm run test:packages:data-schemas` | Run packages/data-schemas tests |
+| `npm run test:all` | Run all unit tests |
+| `npm run e2e` | Run Playwright E2E tests (requires local MongoDB + running server) |
+| `npm run update` | Pull latest changes from main |
 
 - Node.js: v20.19.0+ or ^22.12.0 or >= 23.0.0
-- Database: MongoDB
+- Database: MongoDB (local or Atlas)
+- Redis: Optional — used for session store and caching
 - Backend runs on `http://localhost:3080/`; frontend dev server on `http://localhost:3090/`
+
+### Targeted test commands
+
+```bash
+# Run a single test file in the backend
+cd api && npx jest server/routes/auth.test.js
+
+# Run tests matching a pattern in packages/api
+cd packages/api && npx jest mcp
+
+# Run a specific frontend test
+cd client && npx jest MyComponent
+
+# Run with coverage
+cd api && npx jest --coverage
+```
 
 ---
 
@@ -150,9 +228,45 @@ Multi-line imports count total character length across all lines. Consolidate va
 - Frontend tests: `__tests__` directories alongside components; use `test/layout-test-utils` for rendering.
 - Cover loading, success, and error states for UI/data flows.
 - Mock data-provider hooks and external dependencies.
+- Test file setup: copy `api/test/.env.test.example` → `api/test/.env.test` before running backend tests.
+
+---
+
+## Git Workflow
+
+1. Branch naming: `new/feature/x`, `fix/bug-description`, `docs/update-readme`
+2. Conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `style:`, `test:`, `chore:`
+3. Keep commit history clean — squash noise commits before PR
+4. One logical change per PR; reference the relevant GitHub issue
+
+```bash
+# Start a new feature branch
+git checkout -b feat/my-feature main
+
+# Verify changes before committing
+npm run lint && npm run test:all
+
+# Commit with conventional message
+git commit -m "feat: add X to the project"
+```
 
 ---
 
 ## Formatting
 
 Fix all formatting lint errors (trailing spaces, tabs, newlines, indentation) using auto-fix when available. All TypeScript/ESLint warnings and errors **must** be resolved.
+
+---
+
+## Boundaries — What NOT to Do
+
+- **Never use `any`** in TypeScript. Define explicit types; check `packages/data-provider/src/types/` first.
+- **Never add new dependencies** without security-checking them first. Prefer existing libraries.
+- **Never modify `/api` directly** unless there is no other option. Prefer `/packages/api` TypeScript.
+- **Never edit locale files other than** `client/src/locales/en/translation.json`.
+- **Never hardcode secrets** — use environment variables from `.env`.
+- **Never commit `node_modules/`, `dist/`, `.env`**, or generated build artifacts.
+- **Never break existing tests** — if tests must change, understand why first.
+- **Never add inline `type` to value imports** — always use standalone `import type { ... }`.
+- **Never loop over the same collection twice** when a single pass suffices.
+- **Never use dynamic imports** unless absolutely necessary.
