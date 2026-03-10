@@ -19,3 +19,4 @@ export {
 } from '@librechat/data-schemas';
 export * from './jwt';
 export * from './keyCache';
+export * from './migration';

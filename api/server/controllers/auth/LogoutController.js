@@ -1,10 +1,15 @@
 const cookies = require('cookie');
-const { isEnabled } = require('@librechat/api');
+const { isEnabled, userKeyCache } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { logoutUser } = require('~/server/services/AuthService');
 const { getOpenIdConfig } = require('~/strategies');
 
 const logoutController = async (req, res) => {
+  /** Evict the in-memory UEK so the passphrase must be re-entered on next login. */
+  if (req.user?.id) {
+    userKeyCache.evict(String(req.user.id));
+  }
+
   const parsedCookies = req.headers.cookie ? cookies.parse(req.headers.cookie) : {};
   const isOpenIdUser = req.user?.openidId != null && req.user?.provider === 'openid';
 

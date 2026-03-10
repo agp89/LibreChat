@@ -1,6 +1,11 @@
 import type * as t from '~/types';
+import { attachEncryptionMiddleware } from '~/middleware/encryption';
 import mongoMeili from '~/models/plugins/mongoMeili';
 import convoSchema from '~/schema/convo';
+
+attachEncryptionMiddleware(convoSchema, {
+  fields: ['title', 'system', 'promptPrefix'],
+});
 
 /**
  * Creates or returns the Conversation model using the provided mongoose instance and schema

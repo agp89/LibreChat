@@ -1,5 +1,10 @@
+import { attachEncryptionMiddleware } from '~/middleware/encryption';
 import fileSchema from '~/schema/file';
 import type { IMongoFile } from '~/types';
+
+attachEncryptionMiddleware(fileSchema, {
+  fields: ['text'],
+});
 
 /**
  * Creates or returns the File model using the provided mongoose instance and schema
