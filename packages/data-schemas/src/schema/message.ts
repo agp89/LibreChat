@@ -144,6 +144,10 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: Boolean,
       default: undefined,
     },
+    encryptionVersion: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true },
 );

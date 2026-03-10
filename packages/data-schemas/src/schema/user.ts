@@ -157,6 +157,21 @@ const userSchema = new Schema<IUser>(
       type: String,
       sparse: true,
     },
+    /** Encryption at rest: UEK wrapped with the user's passphrase-derived KEK */
+    encryptedUEK: {
+      type: String,
+      select: false,
+    },
+    /** Encryption at rest: PBKDF2 salt stored for client-side sessionSecret derivation (hex) */
+    passphraseSalt: {
+      type: String,
+      select: false,
+    },
+    /** Encryption at rest: 0 = unencrypted, 1 = enc1 passphrase-protected scheme */
+    encryptionVersion: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true },
 );

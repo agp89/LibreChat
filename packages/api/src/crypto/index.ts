@@ -7,5 +7,15 @@ export {
   decryptV3,
   hashBackupCode,
   getRandomValues,
+  generatePassphraseSalt,
+  deriveKEK,
+  generateUEK,
+  wrapUEK,
+  unwrapUEK,
+  encryptUserData,
+  decryptUserData,
+  isEncrypted,
+  deriveTagBlindIndex,
 } from '@librechat/data-schemas';
 export * from './jwt';
+export * from './keyCache';

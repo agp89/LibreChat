@@ -7,6 +7,7 @@ export interface IMemoryEntry extends Document {
   value: string;
   tokenCount?: number;
   updated_at?: Date;
+  encryptionVersion?: number;
 }
 
 export interface IMemoryEntryLean {

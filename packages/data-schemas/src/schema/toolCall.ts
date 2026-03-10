@@ -10,6 +10,7 @@ export interface IToolCallData extends Document {
   attachments?: TAttachment[];
   blockIndex?: number;
   partIndex?: number;
+  encryptionVersion?: number;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -44,6 +45,10 @@ const toolCallSchema: Schema<IToolCallData> = new Schema(
     },
     partIndex: {
       type: Number,
+    },
+    encryptionVersion: {
+      type: Number,
+      default: 0,
     },
   },
   { timestamps: true },

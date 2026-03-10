@@ -28,6 +28,10 @@ const MemoryEntrySchema: Schema<IMemoryEntry> = new Schema({
     type: Date,
     default: Date.now,
   },
+  encryptionVersion: {
+    type: Number,
+    default: 0,
+  },
 });
 
 export default MemoryEntrySchema;

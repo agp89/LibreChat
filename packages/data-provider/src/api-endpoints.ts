@@ -158,6 +158,13 @@ export const requestPasswordReset = () => `${BASE_URL}/api/auth/requestPasswordR
 
 export const resetPassword = () => `${BASE_URL}/api/auth/resetPassword`;
 
+/* Encryption at rest */
+export const encryptionSalt = () => `${BASE_URL}/api/auth/encryption-salt`;
+export const setupEncryption = () => `${BASE_URL}/api/auth/setup-encryption`;
+export const unlockEncryption = () => `${BASE_URL}/api/auth/unlock-encryption`;
+export const changePassphrase = () => `${BASE_URL}/api/auth/change-passphrase`;
+export const resetEncryption = () => `${BASE_URL}/api/auth/reset-encryption`;
+
 export const verifyEmail = () => `${BASE_URL}/api/user/verify`;
 
 // Auth page URLs (for client-side navigation and redirects)

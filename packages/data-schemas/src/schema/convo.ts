@@ -37,6 +37,10 @@ const convoSchema: Schema<IConversation> = new Schema(
     expiredAt: {
       type: Date,
     },
+    encryptionVersion: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true },
 );
