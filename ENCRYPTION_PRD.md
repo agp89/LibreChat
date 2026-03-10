@@ -46,7 +46,7 @@ LibreChat currently stores all user chat data (messages, conversation titles, fi
 
 This PRD defines a **server-side encryption-at-rest** architecture where every piece of user-generated content is encrypted before it reaches the database. Encryption keys are derived per-user so that **database access alone is not sufficient to read user data**. The server never persists plaintext user content or long-lived decryption keys to disk.
 
-> **⚠️ Important Security Limitation:** This design is server-side encryption at rest — **not** end-to-end encryption. Because the server must decrypt data to call LLM APIs, anyone with access to both the `ENCRYPTION_MASTER_KEY` environment variable and the database can derive per-user keys and decrypt user data. This design protects against database-only breaches, unauthorized DBA access, and compromised backups. It does **not** provide absolute protection against a determined server administrator who controls both the application deployment and the database. See §5.4 for the full honest security assessment.
+> **⚠️ Important Security Limitation:** This design is server-side encryption at rest — **not** end-to-end encryption. Because the server must decrypt data to call LLM APIs, anyone with access to both the `ENCRYPTION_MASTER_KEY` environment variable and the database can derive per-user keys and decrypt user data. This design protects against database-only breaches, unauthorized DBA access, and compromised backups. It does **not** provide absolute protection against a determined server administrator who controls both the application deployment and the database. See §5.4 for the full honest security assessment and Appendix E for a feasibility analysis of end-to-end encryption alternatives.
 
 The design integrates with the existing OpenID Connect / Azure AD authentication flow and builds on LibreChat's existing `encryptV3` (AES-256-CTR) cryptographic primitives in `packages/data-schemas/src/crypto/`.
 
@@ -88,7 +88,7 @@ The design integrates with the existing OpenID Connect / Azure AD authentication
 
 ### Non-Goals
 
-1. **End-to-end encryption (client-side)** — This PRD covers server-side encryption at rest. True E2E encryption (where the server never sees plaintext) is a future consideration but out of scope because the server must process plaintext to call LLM APIs.
+1. **End-to-end encryption (client-side)** — This PRD covers server-side encryption at rest. True E2E encryption (where the server never sees plaintext) is architecturally incompatible with server-side LLM API calls — see Appendix E for a full feasibility analysis of four E2E approaches. A **user-passphrase-derived key** enhancement (Appendix E, Option C) is recommended for Phase 2 to close the admin offline-decryption gap.
 2. **Encrypting LLM API traffic** — Traffic to upstream providers (OpenAI, Azure OpenAI, Anthropic, etc.) is protected by TLS; this PRD does not add an additional encryption layer to those calls.
 3. **Encrypting non-user data** — System configuration, model parameters, endpoint settings, and agent definitions that are not user-generated content are out of scope.
 4. **Key escrow or admin recovery** — If a user's key material is lost (e.g., OIDC provider deletes the account), their encrypted data is unrecoverable by design. An optional admin-recovery mechanism is discussed as a future extension. (Note: An admin possessing `ENCRYPTION_MASTER_KEY` can already derive any user's key — see §5.4 for the implications.)
@@ -237,7 +237,7 @@ For organizations that need stronger guarantees beyond encryption at rest, the f
 | **Trusted Execution Enclave (TEE)** | Plaintext processing happens in isolated memory (Intel SGX, AWS Nitro Enclaves) | Very High | Hardware requirements; significant code changes; attestation complexity |
 | **Client-side E2E with LLM proxy** | Client encrypts; dedicated proxy decrypts only for LLM calls; server never sees plaintext | Very High | Requires architectural overhaul; breaks server-side features (search, memories, agents) |
 | **Audit logging of key access** | Does not prevent access but creates accountability trail | Medium | Useful as a deterrent; helps detect misuse after the fact |
-| **Key derivation with user-held secret** | Adds user password/passphrase to HKDF input; admin cannot derive without user secret | Medium | Breaks "transparent to end users" goal; requires passphrase prompt on every session start; lost passphrase = data loss |
+| **Key derivation with user-held secret** | Adds user password/passphrase to HKDF input; admin cannot derive without user secret | Medium | Breaks "transparent to end users" goal; requires passphrase prompt on every session start; lost passphrase = data loss. **Recommended as Phase 2 — see Appendix E, Option C for full design.** |
 
 ---
 
@@ -1480,3 +1480,345 @@ The existing `tokenCount` field on messages is already unencrypted and provides 
 | 2026-03-10 | Set 16 MB message size limit with 7 MB plaintext recommendation (Q6) | MongoDB BSON limit is 16 MB; hex-encoded ciphertext doubles size; 7 MB plaintext → ~15 MB ciphertext is safe margin |
 | 2026-03-10 | No changes to aggregation pipelines for Phase 1 (Q7) | All existing aggregations operate on metadata fields (categories, authors, counts), not user-generated content; zero breaking changes |
 | 2026-03-10 | Document honest security limitations (§5.4) | Server-side encryption cannot prevent admin with master key + DB access from decrypting user data; this is an inherent architectural constraint. Transparency prevents false confidence and guides organizations toward appropriate additional controls. |
+| 2026-03-10 | E2E encryption feasibility analysis (Appendix E) | True "nobody but the user" E2E is fundamentally incompatible with server-side LLM calls. Documented four architectural options with feature impact matrices. Recommended Option C (user-passphrase-derived keys) as the strongest achievable protection within current architecture. |
+
+### E. End-to-End Encryption Feasibility Analysis
+
+> **Context:** This appendix addresses the question: *"How could we build it so that not even admins can read user chats — like real end-to-end encryption?"*
+
+#### E.1 The Core Tension
+
+LibreChat is a **server-side AI chat application**. The server must:
+
+1. **Read the user's message** to send it to an LLM API (OpenAI, Anthropic, Azure, etc.)
+2. **Read the LLM's response** to stream it back to the user
+3. **Read memories** to inject context into the prompt
+4. **Read tool inputs/outputs** to execute agent tools
+5. **Read file content** to extract text for RAG
+6. **Read message text** to count tokens for quota enforcement
+
+This creates an **unavoidable requirement**: the server must access plaintext during an active user session. The question becomes: *how much can we limit that access, and what guarantees can we provide about data at rest?*
+
+#### E.2 Where the Server Reads Plaintext Today
+
+A complete audit of the codebase identified **11 server-side features** that read user plaintext:
+
+| # | Feature | Key Files | Why Plaintext Is Needed | Importance |
+|---|---|---|---|---|
+| 1 | **LLM API calls** | `api/app/clients/prompts/formatMessages.js`, `packages/api/src/endpoints/openai/llm.ts`, `api/app/clients/BaseClient.js` | Messages must be sent as plaintext to LLM providers | Critical — core functionality |
+| 2 | **Streaming responses** | `api/server/services/Runs/StreamRunManager.js`, `api/models/Message.js` | Server accumulates streamed response text before saving | Critical — core functionality |
+| 3 | **Memory/RAG injection** | `packages/api/src/agents/memory.ts`, `api/app/clients/prompts/createContextHandlers.js` | Server reads memories and file chunks to build prompt context | High — agent capability |
+| 4 | **Agent tools** | `packages/api/src/agents/tools.ts`, `api/app/clients/tools/structured/*.js` | External tools (Google Search, DALL-E, Wolfram) need plaintext query | High — agent capability |
+| 5 | **File text extraction** | `packages/api/src/files/text.ts`, `packages/api/src/files/parse.ts` | Server parses PDFs/docs to extract searchable text | Medium — file processing |
+| 6 | **Token counting** | `packages/api/src/utils/tokenizer.ts` | Tokenizer encodes plaintext to count tokens for quota/billing | Medium — billing |
+| 7 | **Title generation** | `api/server/services/Endpoints/agents/title.js` | Server sends first message to LLM to auto-generate title | Low — convenience |
+| 8 | **Search indexing** | `api/db/indexSync.js`, `packages/data-schemas/src/models/plugins/mongoMeili.ts` | MeiliSearch indexes plaintext for full-text search | Medium — search |
+| 9 | **Shared conversations** | `packages/data-schemas/src/methods/share.ts` | Server reads messages to build shared link content | Medium — collaboration |
+| 10 | **Plugins** | `api/server/services/PluginService.js`, `api/server/controllers/PluginController.js` | Plugins receive plaintext to execute | High — extensibility |
+| 11 | **Content moderation** | *(not implemented)* | Would require plaintext if added | N/A |
+
+#### E.3 Four Architectural Options
+
+##### Option A: Full Client-Side E2E (Client Calls LLM Directly)
+
+```
+┌──────────────────────────────────┐
+│           CLIENT                  │
+│  ┌────────┐    ┌──────────────┐  │
+│  │Encrypt │    │ LLM API Call │  │ ◀── Client calls OpenAI/Anthropic directly
+│  │/Decrypt│    │  (plaintext) │  │
+│  └────┬───┘    └──────┬───────┘  │
+│       │               │          │
+└───────┼───────────────┼──────────┘
+        │ ciphertext    │ N/A
+┌───────▼───────────────┼──────────┐
+│       SERVER                      │
+│  (never sees plaintext)          │
+│  Stores only ciphertext          │
+└──────────────────────────────────┘
+```
+
+**How it works:** The client holds the encryption key, encrypts all data before sending to the server, and calls LLM APIs directly from the browser.
+
+**What breaks:**
+
+| Feature | Status | Why |
+|---|---|---|
+| LLM API calls | ❌ **Broken** | API keys exposed to browser; CORS blocks most LLM APIs; no rate limiting |
+| Streaming | ⚠️ **Degraded** | Client-to-LLM streaming works but bypasses server monitoring |
+| Memories/RAG | ❌ **Broken** | Server can't inject memories into prompt; client would need all memories locally |
+| Agent tools | ❌ **Broken** | Server can't execute tools; client can't call server-side tools |
+| File extraction | ❌ **Broken** | Server can't parse files; client-side PDF parsing is limited |
+| Token counting | ⚠️ **Degraded** | Client can count, but server can't verify for billing |
+| Title generation | ❌ **Broken** | Server can't generate; client would need to do it |
+| Search | ❌ **Broken** | Server can't search ciphertext |
+| Shared conversations | ❌ **Broken** | Recipient needs sender's key; no server-mediated sharing |
+| Plugins/tools | ❌ **Broken** | All server-side tool execution impossible |
+
+**Verdict:** ❌ **Not viable.** Breaks nearly every feature. Exposes API keys. Fundamentally incompatible with LibreChat's architecture.
+
+---
+
+##### Option B: Hybrid E2E (Client Encrypts for Storage, Server Decrypts Transiently for LLM)
+
+```
+┌───────────────────────────────────────────┐
+│                 CLIENT                     │
+│  ┌──────────┐                             │
+│  │Client Key│ (never sent to server)      │
+│  └────┬─────┘                             │
+│       │                                   │
+│  1. Encrypt message with Client Key       │
+│  2. Send encrypted message to server      │
+│  3. Receive encrypted response            │
+│  4. Decrypt response with Client Key      │
+└───────┬───────────────────────────────────┘
+        │ ciphertext + wrapped session key
+┌───────▼───────────────────────────────────┐
+│                 SERVER                     │
+│                                           │
+│  1. Receive encrypted message             │
+│  2. Decrypt with session key (see below)  │
+│  3. Send plaintext to LLM API            │
+│  4. Receive LLM response                 │
+│  5. Encrypt response with session key    │
+│  6. Store encrypted message + response   │
+│  7. Return encrypted response to client  │
+│  8. ❌ NEVER persist plaintext            │
+│  9. ❌ NEVER persist session key to disk  │
+│                                           │
+│  Session key: ephemeral, per-request      │
+│  Derived from client-provided material    │
+└───────────────────────────────────────────┘
+```
+
+**How it works:**
+1. Client generates a key pair (e.g., X25519) or symmetric key on first use, stored in browser (IndexedDB/localStorage)
+2. On each request, client encrypts the message with its key
+3. Client also sends a "session key" wrapped for the server (using a server-side public key or shared secret)
+4. Server decrypts ONLY for the duration of the LLM call, then discards the plaintext
+5. Server encrypts the LLM response before persisting and sends encrypted response to client
+
+**What breaks:**
+
+| Feature | Status | Mitigation |
+|---|---|---|
+| LLM API calls | ✅ **Works** | Server decrypts transiently for API call |
+| Streaming | ⚠️ **Complex** | Server must encrypt each chunk before sending; client decrypts chunks |
+| Memories/RAG | ⚠️ **Complex** | Server decrypts memories transiently for prompt injection; encrypted at rest |
+| Agent tools | ✅ **Works** | Server decrypts transiently for tool execution |
+| File extraction | ✅ **Works** | Server decrypts file for text extraction, stores encrypted text |
+| Token counting | ✅ **Works** | Server decrypts transiently for counting |
+| Title generation | ✅ **Works** | Server decrypts first message for title generation |
+| Search | ❌ **Broken** | Cannot search encrypted content without decryption |
+| Shared conversations | ⚠️ **Complex** | Client re-encrypts with share key; server stores encrypted share |
+| Plugins/tools | ✅ **Works** | Server decrypts transiently for tool execution |
+
+**Critical weakness:** The server still sees plaintext during every request. An admin who modifies the server code can log/exfiltrate plaintext from the transient decryption step. **This does not provide true E2E protection against a malicious server operator.**
+
+**What it DOES improve over current PRD:**
+- Admin cannot decrypt data at rest offline (no master key → UEK derivation chain)
+- Requires active code modification to intercept plaintext, not just passive key extraction
+- Key material is client-held, not server-derived
+
+**Verdict:** ⚠️ **Partially viable.** Significantly stronger than server-side-only encryption. But still requires trusting the server during active sessions. High implementation complexity.
+
+---
+
+##### Option C: User-Passphrase-Derived Keys (Recommended Strongest Achievable)
+
+```
+┌───────────────────────────────────────────┐
+│                 CLIENT                     │
+│                                           │
+│  1. User enters passphrase on login       │
+│  2. Client derives session secret:        │
+│     secret = PBKDF2(passphrase, salt)     │
+│  3. Client sends secret to server         │
+│     (over TLS, once per session)          │
+│  4. Server uses secret in key derivation  │
+│                                           │
+└───────┬───────────────────────────────────┘
+        │ session secret (TLS-protected)
+┌───────▼───────────────────────────────────┐
+│                 SERVER                     │
+│                                           │
+│  Key derivation NOW includes user secret: │
+│                                           │
+│  KEK = HKDF(                             │
+│    ENCRYPTION_MASTER_KEY +               │
+│    user._id +                             │
+│    user_session_secret  ◀── NEW          │
+│  )                                        │
+│                                           │
+│  UEK = unwrap(encryptedUEK, KEK)         │
+│  (UEK cached in memory for session)      │
+│                                           │
+│  Admin with master_key + DB access        │
+│  CANNOT derive KEK without the            │
+│  user's passphrase.                       │
+│                                           │
+└───────────────────────────────────────────┘
+```
+
+**How it works:**
+1. User sets an "encryption passphrase" (separate from login password) on first use
+2. On each login, client prompts for passphrase, derives a `sessionSecret` via PBKDF2
+3. Client sends `sessionSecret` to server (once per session, over TLS)
+4. Server includes `sessionSecret` in HKDF key derivation: `KEK = HKDF(masterKey + userId + sessionSecret)`
+5. Without the user's passphrase, an admin cannot derive KEK → cannot unwrap UEK → cannot decrypt data
+
+**What breaks:**
+
+| Feature | Status | Notes |
+|---|---|---|
+| All core features | ✅ **Works** | Server still processes plaintext during active session (same as current design) |
+| Transparent UX | ❌ **Broken** | User must enter passphrase on every login/session refresh |
+| Password recovery | ❌ **No recovery** | Lost passphrase = permanently lost data; no admin reset possible |
+| Session refresh | ⚠️ **Degraded** | Must re-prompt for passphrase when session expires (or cache client-side) |
+| Search | ⚠️ **Same as current PRD** | Fallback search works during active session |
+| Multi-device | ⚠️ **Complex** | Same passphrase on all devices; no device-specific keys |
+
+**What this DOES protect against:**
+
+| Threat | Protected? | Why |
+|---|---|---|
+| Admin with master key + DB access (offline) | ✅ **Yes** | KEK derivation requires user's passphrase; admin doesn't have it |
+| DBA with only DB access | ✅ **Yes** | Same as current PRD — no master key |
+| Database breach | ✅ **Yes** | Same as current PRD — only ciphertext |
+| Admin who modifies running code | ❌ **No** | Can intercept passphrase during login or plaintext during LLM calls |
+
+**Why this is the recommended strongest option:**
+- **Minimal architectural change**: Same Mongoose middleware, same encryption service, same key cache
+- **Real improvement**: Closes the biggest gap in §5.4 (admin with master key + DB)
+- **Honest about remaining limitation**: Code modification attack still possible, but requires active malice, not passive access
+- **User choice**: Can be offered as an opt-in "enhanced security" mode for sensitive deployments
+
+**Implementation sketch:**
+
+```typescript
+// Client-side (login flow)
+const passphrase = await promptUserForPassphrase();
+const salt = await fetchUserSalt(userId); // stored unencrypted in User document
+const sessionSecret = await crypto.subtle.deriveBits(
+  { name: 'PBKDF2', salt, iterations: 600_000, hash: 'SHA-256' },
+  await crypto.subtle.importKey('raw', encode(passphrase), 'PBKDF2', false, ['deriveBits']),
+  256
+);
+// Send sessionSecret with login request (TLS-protected)
+
+// Server-side (key derivation, modified from current PRD)
+function deriveKEK(masterKey: Buffer, userId: string, sessionSecret: Buffer): Buffer {
+  return hkdf('sha256', masterKey, Buffer.concat([
+    Buffer.from(userId),
+    sessionSecret, // ← NEW: user-held secret
+  ]), 'librechat-kek', 32);
+}
+```
+
+**Verdict:** ✅ **Recommended.** Best balance of security improvement vs. implementation complexity. Closes the primary gap while keeping the architecture intact.
+
+---
+
+##### Option D: Trusted Execution Environment (TEE)
+
+```
+┌───────────────────────────────────┐
+│           CLIENT                   │
+│  (standard, no changes)           │
+└───────┬───────────────────────────┘
+        │ HTTPS
+┌───────▼───────────────────────────┐
+│           SERVER                   │
+│  ┌─────────────────────────────┐  │
+│  │    TRUSTED ENCLAVE          │  │
+│  │    (Intel SGX / Nitro)      │  │
+│  │                             │  │
+│  │  • Master key sealed here   │  │
+│  │  • Key derivation here      │  │
+│  │  • Encrypt/decrypt here     │  │
+│  │  • LLM API calls here      │  │
+│  │  • Plaintext NEVER leaves   │  │
+│  │    enclave memory           │  │
+│  │                             │  │
+│  │  Admin cannot inspect       │  │
+│  │  enclave memory even with   │  │
+│  │  root access                │  │
+│  └─────────────────────────────┘  │
+│                                   │
+│  Outside enclave:                 │
+│  • Only ciphertext visible       │
+│  • Admin sees nothing            │
+└───────────────────────────────────┘
+```
+
+**How it works:**
+- All cryptographic operations and LLM API calls happen inside a hardware-enforced Trusted Execution Environment
+- The enclave's memory is encrypted by the CPU; even root/admin cannot read it
+- Master key is "sealed" to the enclave (only that specific code can access it)
+- Remote attestation proves to clients that the correct code is running
+
+**What breaks:**
+
+| Feature | Status | Notes |
+|---|---|---|
+| All features | ✅ **Works** | Transparent to application logic |
+| Deployment | ❌ **Major constraint** | Requires Intel SGX hardware or AWS Nitro Enclaves |
+| Performance | ⚠️ **Degraded** | Enclave context switches add latency; memory limits |
+| Development | ❌ **Very complex** | Significant code restructuring to run inside enclave |
+| Self-hosted | ❌ **Hardware dependent** | Not all servers have SGX; limits deployment flexibility |
+
+**Verdict:** ⚠️ **Theoretically strongest, but impractical for LibreChat.** Requires specific hardware, limits deployment options, and adds enormous implementation complexity. Best suited for dedicated cloud deployments (AWS Nitro) where the cloud provider manages the enclave infrastructure.
+
+---
+
+#### E.4 Comparison Matrix
+
+| Property | Current PRD (Server-Side) | Option A (Full Client E2E) | Option B (Hybrid E2E) | **Option C (Passphrase)** | Option D (TEE) |
+|---|---|---|---|---|---|
+| Admin offline decryption | ❌ Possible | ✅ Impossible | ✅ Impossible | **✅ Impossible** | ✅ Impossible |
+| Admin code modification attack | ❌ Possible | ✅ Impossible | ❌ Possible | **❌ Possible** | ✅ Impossible |
+| LLM API calls work | ✅ Yes | ❌ No | ✅ Yes | **✅ Yes** | ✅ Yes |
+| Agent tools work | ✅ Yes | ❌ No | ✅ Yes | **✅ Yes** | ✅ Yes |
+| Memories/RAG work | ✅ Yes | ❌ No | ⚠️ Complex | **✅ Yes** | ✅ Yes |
+| Search works | ⚠️ Fallback | ❌ No | ❌ No | **⚠️ Fallback** | ✅ Yes |
+| Transparent UX | ✅ Yes | ✅ Yes | ⚠️ Key mgmt | **❌ Passphrase prompt** | ✅ Yes |
+| Self-hosted compatible | ✅ Yes | ✅ Yes | ✅ Yes | **✅ Yes** | ❌ Hardware required |
+| Implementation complexity | Medium | Very High | Very High | **Medium** | Very High |
+| Data recovery if secret lost | ✅ Admin can recover | ❌ No recovery | ❌ No recovery | **❌ No recovery** | ✅ Admin can recover |
+
+#### E.5 Recommendation
+
+**For Phase 1 (current PRD):** Implement server-side encryption at rest as designed. This addresses the most common threat (database breach) and satisfies regulatory requirements.
+
+**For Phase 2 (enhanced security):** Implement **Option C (User-Passphrase-Derived Keys)** as an opt-in "enhanced encryption" mode. This is the strongest protection achievable within LibreChat's architecture without breaking core features:
+
+- Closes the biggest gap (admin with master key + DB cannot decrypt offline)
+- Minimal additional implementation cost over the current PRD design
+- Honest about the remaining limitation (code modification attack during active session)
+- Offered as opt-in — organizations choose their security/UX trade-off
+
+**For Phase 3 (future consideration):** Evaluate **Option D (TEE)** for cloud-hosted deployments where the strongest guarantees are needed. This would be a separate deployment mode, not a replacement for the standard architecture.
+
+#### E.6 What "Real E2E" Means in an AI Chat Context
+
+Traditional end-to-end encryption (like Signal or WhatsApp) works because:
+- Both endpoints are humans
+- The server is just a relay — it never needs to read the content
+- The encryption happens peer-to-peer
+
+In an AI chat application, the "other endpoint" is an LLM API server operated by a third party. The application server sits in the middle and **must** read the plaintext to forward it. This means:
+
+1. **True E2E between user and LLM is impossible** — the LLM provider always sees the plaintext (OpenAI, Anthropic, etc.)
+2. **True E2E between user and storage is achievable** (Options B/C) — but only for data at rest, not in transit to the LLM
+3. **The only way to prevent all server access** is to not use a server (Option A) — which breaks the product
+
+The honest framing is: **"How much can we limit who sees plaintext, and for how long?"**
+
+| Level | Who Sees Plaintext | Duration |
+|---|---|---|
+| **Current (no encryption)** | Everyone with DB access, forever | Permanent |
+| **Phase 1 (server-side encryption)** | Server + admin with master key + DB | Permanent access capability |
+| **Phase 2 (passphrase-derived keys)** | Server during active session only | Transient — only while user is logged in |
+| **Phase 3 (TEE)** | Only the enclave (not even admin) | Transient — only during processing |
+| **Theoretical (full client E2E)** | Only the user's browser | Never on server — but breaks the product |
