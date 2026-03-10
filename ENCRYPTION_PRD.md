@@ -1,8 +1,8 @@
 # Product Requirements Document: User Chat Data Encryption at Rest
 
-**Document Version:** 1.0
+**Document Version:** 1.1
 **Date:** 2026-03-10
-**Status:** Draft
+**Status:** Draft — Open Questions Resolved
 **Author:** Engineering Team
 
 ---
@@ -1105,13 +1105,220 @@ This is a low-priority enhancement and not required for the initial release.
 
 | # | Question | Status | Decision |
 |---|---|---|---|
-| 1 | Should conversation `tags` be encrypted? Tags are used for filtering and would require decryption for tag-based queries. | Open | Recommend: encrypt tags; accept that tag filtering requires server-side decryption |
-| 2 | Should file `filename` be encrypted? Filenames may contain sensitive information but are used for serving files. | Open | Recommend: Phase 2 enhancement; serve files by `file_id` instead of filename |
-| 3 | Should admin users have a recovery mechanism for user data if a user leaves the organization? | Open | Recommend: Optional key escrow feature as Phase 2; not in initial release |
-| 4 | Should the encryption feature be available for non-OIDC authentication methods (local, LDAP)? | Open | Recommend: Yes; key derivation uses user ID (not OIDC-specific), so all auth methods are supported |
-| 5 | Should MongoDB Client-Side Field Level Encryption (CSFLE) be evaluated as an alternative to application-layer encryption? | Open | Recommend: Evaluate as alternative; CSFLE integrates with MongoDB Atlas and provides automatic encryption but has driver version and Atlas tier requirements |
-| 6 | What is the maximum supported message size for encryption? AES-GCM has a theoretical limit of ~64 GB per nonce, but practical limits may be lower. | Open | Recommend: Document a 16 MB limit (MongoDB document size limit is the practical constraint) |
-| 7 | How should encrypted data be handled in MongoDB aggregation pipelines? Some analytics may operate on encrypted fields. | Open | Recommend: Aggregations on encrypted fields require application-layer decryption; provide utility functions for admin analytics |
+| 1 | Should conversation `tags` be encrypted? Tags are used for filtering and would require decryption for tag-based queries. | **Resolved** | **Yes — encrypt tags in Phase 1.** Tag filtering will use server-side decryption. See §18.1 for full rationale. |
+| 2 | Should file `filename` be encrypted? Filenames may contain sensitive information but are used for serving files. | **Resolved** | **No for Phase 1; yes for Phase 2.** Files are already served by `file_id`, not filename. Filename is only used in `Content-Disposition` headers. See §18.2. |
+| 3 | Should admin users have a recovery mechanism for user data if a user leaves the organization? | **Resolved** | **Phase 2 — optional key escrow.** No admin data-recovery features exist today. Initial release prioritizes per-user isolation; key escrow adds complexity without blocking adoption. See §18.3. |
+| 4 | Should the encryption feature be available for non-OIDC authentication methods (local, LDAP)? | **Resolved** | **Yes — all authentication methods supported.** Key derivation uses `user._id` (MongoDB ObjectId), which is stable and unique across every auth provider. See §18.4. |
+| 5 | Should MongoDB Client-Side Field Level Encryption (CSFLE) be evaluated as an alternative to application-layer encryption? | **Resolved** | **Evaluated and rejected.** CSFLE requires MongoDB Atlas (not self-hosted), does not support per-user keys, and limits queries to equality only. Application-layer encryption is the correct approach for LibreChat. See §18.5. |
+| 6 | What is the maximum supported message size for encryption? AES-GCM has a theoretical limit of ~64 GB per nonce, but practical limits may be lower. | **Resolved** | **16 MB limit (MongoDB BSON constraint).** AES-256-GCM overhead is negligible (~28 bytes per field). No application-level message size validation exists today; add validation during implementation. See §18.6. |
+| 7 | How should encrypted data be handled in MongoDB aggregation pipelines? Some analytics may operate on encrypted fields. | **Resolved** | **No immediate impact — defer to Phase 2.** All current aggregation pipelines operate on metadata fields (categories, authors, counts), not user-generated content. Provide application-layer decryption utilities for future analytics needs. See §18.7. |
+
+### 18.1 Resolution: Conversation Tags Encryption
+
+**Decision:** Encrypt tags in Phase 1.
+
+**Investigation findings:**
+
+Tags are defined in the conversation schema (`packages/data-schemas/src/schema/convo.ts`) as `[String]` with `meiliIndex: true`. They are managed through dedicated routes (`api/server/routes/tags.js`) and a separate model (`api/models/ConversationTag.js`) that maintains per-tag usage counts.
+
+Tag filtering happens via a direct MongoDB `$in` query in `api/models/Conversation.js`:
+
+```javascript
+if (Array.isArray(tags) && tags.length > 0) {
+  filters.push({ tags: { $in: tags } });
+}
+```
+
+**Impact of encryption:**
+
+- The `$in` query on encrypted tag values will not work because the ciphertext for the same tag differs each time (random IV in AES-256-GCM).
+- MeiliSearch indexing of tags will index ciphertext, breaking search.
+
+**Implementation approach:**
+
+1. **Blind indexes for tag filtering**: Since tags are short, low-cardinality values, compute a deterministic HMAC-SHA-256 blind index for each tag using the user's UEK. Store the blind index in a parallel `tagsIndex` array field. The `$in` query targets `tagsIndex` instead of `tags`.
+2. **Tag display**: The actual tag names in the `tags` array are encrypted. On read, the Mongoose post-find hook decrypts them for display.
+3. **MeiliSearch**: Index blind-index values (not useful for full-text, but enables exact-match filtering). Alternatively, exclude tags from MeiliSearch when encryption is enabled.
+4. **ConversationTag model**: Tag names stored encrypted; looked up via blind index.
+
+**Trade-off accepted:** Fuzzy/substring search on tags is not possible with blind indexes. Tags are typically short exact-match values (e.g., "work", "personal"), so this is acceptable.
+
+### 18.2 Resolution: File Filename Encryption
+
+**Decision:** Keep filenames unencrypted in Phase 1; encrypt in Phase 2.
+
+**Investigation findings:**
+
+File download routes (`api/server/routes/files/files.js`) serve files by `file_id`, not by filename:
+
+```
+GET /api/files/download/:userId/:file_id
+```
+
+The filename is used only in two places:
+1. `Content-Disposition` header: `attachment; filename="${cleanedFilename}"` — controls the download dialog filename shown to the user.
+2. `X-File-Metadata` header: JSON metadata sent alongside the file.
+
+No file access patterns use the filename for routing or lookup. All queries use `file_id`.
+
+**Why defer to Phase 2:**
+
+- Encrypting filenames in Phase 1 adds complexity to the `Content-Disposition` header handling (would need to decrypt before setting the header).
+- Filenames are low-sensitivity metadata compared to message content.
+- The file content itself (both the extracted `text` field and the binary file in storage) IS encrypted in Phase 1.
+- Phase 2 implementation is straightforward: encrypt filename on save, decrypt on download when building the `Content-Disposition` header.
+
+### 18.3 Resolution: Admin Recovery / Key Escrow
+
+**Decision:** Not in Phase 1. Implement optional key escrow in Phase 2.
+
+**Investigation findings:**
+
+LibreChat currently has no admin data-recovery or data-export features:
+- The only admin data operation is the cascading user deletion script (`config/delete-user.js`) which irreversibly deletes all user data across all collections.
+- Admin middleware (`api/server/middleware/roles/admin.js`) provides only RBAC checks.
+- No "view as user" or "export user data" capabilities exist.
+
+**Why defer:**
+
+- Key escrow adds significant complexity: a separate admin KEK hierarchy, consent flows, and audit logging.
+- The primary use case (enterprise compliance) values data isolation over admin recovery — GDPR's "right to be forgotten" actually benefits from unrecoverable encryption.
+- Organizations that require admin recovery can delay enabling encryption until Phase 2.
+
+**Phase 2 design direction:**
+
+1. **Admin KEK hierarchy**: A separate admin-level KEK that can wrap a copy of each user's UEK, stored in a dedicated `keyEscrow` collection.
+2. **Opt-in consent**: Users or organization policy explicitly enables key escrow.
+3. **Audit trail**: Every escrow key access logged with timestamp, admin identity, and reason.
+4. **Data export endpoint**: Admin-initiated export that uses escrowed UEK to decrypt, producing an encrypted archive (encrypted with the admin's key or a transport key).
+
+### 18.4 Resolution: Non-OIDC Authentication Support
+
+**Decision:** Yes — encryption is available for all authentication methods.
+
+**Investigation findings:**
+
+LibreChat supports 9 authentication strategies:
+
+| Strategy | File | ID Field |
+|---|---|---|
+| Local (email/password) | `api/strategies/localStrategy.js` | `email` |
+| OpenID Connect | `api/strategies/openidStrategy.js` | `openidId` |
+| LDAP | `api/strategies/ldapStrategy.js` | `ldapId` |
+| SAML | `api/strategies/samlStrategy.js` | `samlId` |
+| Google | `api/strategies/googleStrategy.js` | `googleId` |
+| GitHub | `api/strategies/githubStrategy.js` | `githubId` |
+| Discord | `api/strategies/discordStrategy.js` | `discordId` |
+| Facebook | `api/strategies/facebookStrategy.js` | `facebookId` |
+| Apple | via passport-apple | `appleId` |
+
+**Critical finding:** All strategies ultimately create a User document with a MongoDB `_id` (ObjectId) that is:
+- Generated once on first user creation
+- Immutable regardless of authentication method
+- Used as the foreign key in all data collections (`messages.user`, `conversations.user`, `files.user`, etc.)
+
+The key derivation formula `KEK = HKDF(ENCRYPTION_MASTER_KEY, salt=user._id, info="librechat-kek")` depends only on `user._id`, not on any provider-specific field. This means:
+
+- A user logging in via Azure AD gets the same KEK as if they logged in via local auth (assuming same `_id`).
+- Switching authentication providers for the same user account does not invalidate the encryption key.
+- No auth-provider-specific code is needed in the encryption layer.
+
+### 18.5 Resolution: MongoDB CSFLE Evaluation
+
+**Decision:** CSFLE is not suitable for LibreChat. Use application-layer encryption.
+
+**Investigation findings:**
+
+LibreChat uses Mongoose v8.12.1 (`api/package.json`) with MongoDB driver v6.14.2 (`packages/api/package.json`). The driver version supports CSFLE.
+
+However, CSFLE is unsuitable for LibreChat for the following reasons:
+
+| Requirement | Application-Layer (Chosen) | CSFLE |
+|---|---|---|
+| Self-hosted MongoDB support | ✅ Works with any MongoDB | ❌ Requires MongoDB Atlas M10+ |
+| Per-user encryption keys | ✅ UEK per user via HKDF | ❌ Shared data encryption key for all users |
+| Query flexibility | ⚠️ Fallback search with decryption | ❌ Equality queries only on encrypted fields |
+| MeiliSearch integration | ⚠️ Requires encrypted-search workaround | ❌ Not compatible with external search engines |
+| Shared conversations | ✅ Re-encryption with per-share keys | ❌ No built-in sharing model for encrypted data |
+| Mongoose middleware integration | ✅ Natural fit with pre-save/post-find hooks | ⚠️ Requires bypassing Mongoose, using raw driver |
+| Cost | ✅ No additional infrastructure cost | ❌ Atlas M10+ tier ($57+/month minimum) + KMS costs |
+
+**Key disqualifier:** LibreChat explicitly supports self-hosted MongoDB. Many enterprise deployments targeted by this feature run on-premise specifically to avoid cloud dependencies. CSFLE's Atlas-only requirement conflicts with this core deployment model.
+
+**Note for documentation:** CSFLE can be mentioned as a complementary defense-in-depth measure for Atlas-hosted deployments, but it cannot replace application-layer encryption.
+
+### 18.6 Resolution: Message Size Limits
+
+**Decision:** 16 MB limit, dictated by MongoDB BSON document size.
+
+**Investigation findings:**
+
+**AES-256-GCM constraints:**
+- Theoretical maximum: ~64 GB per nonce (2^39 bytes) — not a practical concern.
+- Recommended maximum per NIST: ~64 GB per key before nonce reuse risk — also not a concern for chat messages.
+
+**MongoDB constraints:**
+- BSON document maximum: 16 MB (hard limit enforced by the database).
+- This is the practical ceiling for any single message document.
+
+**Current LibreChat behavior:**
+- The Message schema (`packages/data-schemas/src/schema/message.ts`) has no `maxlength` validation on the `text` field.
+- No application-level size validation exists in message routes.
+- MongoDB naturally rejects documents exceeding 16 MB.
+
+**Encryption overhead per field:**
+- Version prefix (`enc1:`): 4 bytes
+- IV: 24 hex characters (12 bytes binary)
+- Auth tag: 32 hex characters (16 bytes binary)
+- Separators (3 colons): 3 bytes
+- Ciphertext: hex-encoded, so 2× the plaintext size
+- **Total overhead: ~63 bytes fixed + 1× plaintext size** (hex encoding doubles the size)
+
+**Practical limit calculation:**
+- A 7.5 MB plaintext message produces ~15 MB ciphertext (hex-encoded) + 63 bytes overhead.
+- With other document fields (~1 KB), the effective plaintext limit is ~7.5 MB per encrypted field.
+- For typical chat messages (< 100 KB), this is a non-issue.
+
+**Recommendation:** Add application-level validation during encryption implementation:
+
+```typescript
+const MAX_PLAINTEXT_SIZE = 7 * 1024 * 1024; // 7 MB (safe margin for hex encoding + overhead)
+```
+
+Consider binary encoding (base64 instead of hex) to reduce overhead from 2× to 1.33×, increasing the effective limit to ~11 MB plaintext.
+
+### 18.7 Resolution: Aggregation Pipeline Handling
+
+**Decision:** No immediate action needed. Provide decryption utilities for Phase 2 analytics.
+
+**Investigation findings:**
+
+All existing aggregation pipelines in the codebase operate exclusively on metadata fields, not on user-generated content:
+
+| Location | Collection | Fields Aggregated | Encrypted? |
+|---|---|---|---|
+| `api/server/controllers/PermissionsController.js` | `AclEntry` | `resourceType`, `resourceId`, `roleId`, `principalId` | No |
+| `packages/data-schemas/src/methods/agentCategory.ts` | `Agent` | `category`, count | No |
+| `packages/api/src/prompts/migration.ts` | `PromptGroup` | `author`, migration fields | No |
+
+**No aggregation pipelines currently access:**
+- `messages.text` or `messages.content`
+- `conversations.title`
+- `files.text`
+- `memories.value` or `memories.key`
+- `toolcalls.result`
+
+This means encryption introduces **zero breaking changes to existing aggregation pipelines**.
+
+**Future analytics considerations:**
+
+For organizations that want analytics over encrypted data (e.g., message volume by topic, sentiment analysis):
+
+1. **Application-layer approach**: Fetch encrypted documents, decrypt in memory, run analytics in application code. Suitable for small-to-medium datasets.
+2. **Pre-computed statistics**: During message save, compute and store unencrypted statistical fields (e.g., `wordCount`, `languageCode`, `tokenCount` — already present). These support analytics without decryption.
+3. **Batch export**: An admin analytics endpoint that streams decrypted data (using escrowed keys from Phase 2) through an analytics pipeline.
+
+The existing `tokenCount` field on messages is already unencrypted and provides usage analytics without decryption.
 
 ---
 
@@ -1171,3 +1378,10 @@ This is a low-priority enhancement and not required for the initial release.
 | 2026-03-10 | Mongoose middleware over explicit encrypt/decrypt calls | Minimizes changes to existing business logic; transparent to developers |
 | 2026-03-10 | Per-user UEK over per-conversation keys | Simpler key management; one key per user vs. potentially thousands per user; per-conversation adds complexity for shared conversations |
 | 2026-03-10 | Fallback search over disabling search entirely | Preserves functionality, albeit with performance trade-off; users expect search to work |
+| 2026-03-10 | Encrypt conversation tags with blind indexes (Q1) | Tags are user-generated content that may reveal topics; blind indexes (HMAC-SHA-256) enable exact-match `$in` queries without exposing plaintext |
+| 2026-03-10 | Defer filename encryption to Phase 2 (Q2) | Files already served by `file_id`; filename only used in `Content-Disposition` header; low sensitivity relative to message content |
+| 2026-03-10 | Defer admin key escrow to Phase 2 (Q3) | No admin data-recovery features exist today; per-user isolation is the priority; GDPR right-to-be-forgotten benefits from unrecoverable encryption |
+| 2026-03-10 | Support all authentication methods (Q4) | Key derivation uses `user._id` (MongoDB ObjectId), stable and unique across all 9 auth strategies (local, OIDC, LDAP, SAML, Google, GitHub, Discord, Facebook, Apple) |
+| 2026-03-10 | Reject CSFLE in favor of application-layer encryption (Q5) | CSFLE requires MongoDB Atlas M10+; LibreChat supports self-hosted MongoDB; CSFLE lacks per-user keys and limits queries to equality only |
+| 2026-03-10 | Set 16 MB message size limit with 7 MB plaintext recommendation (Q6) | MongoDB BSON limit is 16 MB; hex-encoded ciphertext doubles size; 7 MB plaintext → ~15 MB ciphertext is safe margin |
+| 2026-03-10 | No changes to aggregation pipelines for Phase 1 (Q7) | All existing aggregations operate on metadata fields (categories, authors, counts), not user-generated content; zero breaking changes |
