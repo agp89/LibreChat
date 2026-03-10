@@ -12,6 +12,7 @@ import {
 import { migrateUserDataOnSetup } from '~/crypto/migration';
 import { userKeyCache } from '~/crypto/keyCache';
 import type { IUser } from '@librechat/data-schemas';
+import { logger } from '@librechat/data-schemas';
 
 const MASTER_KEY_HEX = process.env.ENCRYPTION_MASTER_KEY ?? '';
 const MAX_PASSPHRASE_ATTEMPTS = parseInt(
@@ -197,7 +198,7 @@ export async function unlockEncryption(
   // On first unlock, migrate existing plaintext data asynchronously (fire-and-forget)
   if (isFirstUnlock) {
     migrateUserDataOnSetup(mongoose, userId, uek).catch((err) => {
-      console.error(`[unlockEncryption] Migration failed for user ${userId}:`, err);
+      logger.error(`[unlockEncryption] Migration failed for user ${userId}:`, err);
     });
   }
 

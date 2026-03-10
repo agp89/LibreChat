@@ -6,7 +6,7 @@ export interface ISharedLink extends Document {
   user?: string;
   messages?: Types.ObjectId[];
   /** Plaintext message snapshots stored when encryption is active (PRD §7.8) */
-  messageSnapshots?: Record<string, unknown>[];
+  messageSnapshots?: unknown[];
   shareId?: string;
   targetMessageId?: string;
   isPublic: boolean;

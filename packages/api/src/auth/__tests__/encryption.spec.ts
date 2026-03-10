@@ -14,7 +14,10 @@ process.env.ENCRYPTION_MASTER_KEY = 'a'.repeat(64);
 jest.mock('@librechat/data-schemas', () => {
   const { AsyncLocalStorage } = require('async_hooks'); // eslint-disable-line @typescript-eslint/no-require-imports
   process.env.ENCRYPTION_MASTER_KEY = 'a'.repeat(64);
-  return { encryptionStore: new AsyncLocalStorage() };
+  return {
+    encryptionStore: new AsyncLocalStorage(),
+    logger: { error: jest.fn(), warn: jest.fn(), info: jest.fn() },
+  };
 });
 
 jest.mock('~/crypto', () => {

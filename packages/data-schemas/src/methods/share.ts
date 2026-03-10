@@ -435,32 +435,30 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
       // When encryption is active, store plaintext message snapshots (PRD §7.8).
       // The owner's UEK is available via encryptionStore during share creation.
       const encCtx = encryptionStore.getStore();
-      let messageSnapshots: Record<string, unknown>[] | undefined;
+      let messageSnapshots: t.IMessage[] | undefined;
 
       if (encCtx?.uek) {
-        const decryptedMessages = (conversationMessages as Record<string, unknown>[]).map(
+        const decryptedMessages = (conversationMessages as t.IMessage[]).map(
           (msg) => {
-            const decrypted = { ...msg };
-            for (const field of ['text']) {
-              if (typeof decrypted[field] === 'string' && isEncrypted(decrypted[field])) {
-                try {
-                  decrypted[field] = decryptUserData(decrypted[field] as string, encCtx.uek);
-                } catch {
-                  // Leave as-is if decryption fails
-                }
+            const decrypted = { ...msg } as t.IMessage & { __v?: unknown };
+            if (typeof decrypted.text === 'string' && isEncrypted(decrypted.text)) {
+              try {
+                decrypted.text = decryptUserData(decrypted.text, encCtx.uek);
+              } catch {
+                // Leave as-is if decryption fails
               }
             }
-            if (decrypted['content'] != null && typeof decrypted['content'] === 'string' && isEncrypted(decrypted['content'])) {
+            if (decrypted.content != null && typeof decrypted.content === 'string' && isEncrypted(decrypted.content as string)) {
               try {
-                decrypted['content'] = JSON.parse(decryptUserData(decrypted['content'] as string, encCtx.uek));
+                decrypted.content = JSON.parse(decryptUserData(decrypted.content as string, encCtx.uek));
               } catch {
                 // Leave as-is
               }
             }
             // Strip user field for privacy
-            delete decrypted['user'];
-            delete decrypted['__v'];
-            return decrypted;
+            delete (decrypted as Partial<t.IMessage>).user;
+            delete decrypted.__v;
+            return decrypted as t.IMessage;
           },
         );
         messageSnapshots = decryptedMessages;
