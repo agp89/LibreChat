@@ -138,6 +138,7 @@ const startServer = async () => {
   /* API Endpoints */
   app.use('/api/auth', routes.auth);
   app.use('/api/admin', routes.adminAuth);
+  app.use('/api/admin/encryption', require('./routes/admin/encryption'));
 
   /**
    * Encryption context middleware: populates AsyncLocalStorage with the user's

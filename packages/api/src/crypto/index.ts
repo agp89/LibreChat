@@ -20,3 +20,4 @@ export {
 export * from './jwt';
 export * from './keyCache';
 export * from './migration';
+export { RedisKeyCache } from './redisKeyCache';

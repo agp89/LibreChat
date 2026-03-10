@@ -99,6 +99,7 @@ router.get('/', async function (req, res) {
       sharedLinksEnabled,
       publicSharedLinksEnabled,
       encryptionEnabled: process.env.ENCRYPT_USER_DATA === 'true' && !!process.env.ENCRYPTION_MASTER_KEY,
+      encryptedSearchMode: process.env.ENCRYPT_USER_DATA === 'true' ? (process.env.ENCRYPTED_SEARCH_MODE || 'fallback') : undefined,
       analyticsGtmId: process.env.ANALYTICS_GTM_ID,
       instanceProjectId: instanceProject._id.toString(),
       bundlerURL: process.env.SANDPACK_BUNDLER_URL,
