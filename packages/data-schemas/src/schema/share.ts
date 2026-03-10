@@ -5,6 +5,8 @@ export interface ISharedLink extends Document {
   title?: string;
   user?: string;
   messages?: Types.ObjectId[];
+  /** Plaintext message snapshots stored when encryption is active (PRD §7.8) */
+  messageSnapshots?: unknown[];
   shareId?: string;
   targetMessageId?: string;
   isPublic: boolean;
@@ -27,6 +29,11 @@ const shareSchema: Schema<ISharedLink> = new Schema(
       index: true,
     },
     messages: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Message' }],
+    messageSnapshots: {
+      type: [Schema.Types.Mixed],
+      default: undefined,
+      select: false,
+    },
     shareId: {
       type: String,
       index: true,

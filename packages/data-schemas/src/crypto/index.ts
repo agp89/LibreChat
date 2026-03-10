@@ -1,3 +1,4 @@
+export * from './userEncryption';
 import 'dotenv/config';
 import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';

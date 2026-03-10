@@ -22,6 +22,8 @@ export default {
     ],
   },
   moduleNameMapper: {
+    '^@librechat/data-schemas$': '<rootDir>/../data-schemas/src/index.ts',
+    '^@librechat/data-schemas/(.*)$': '<rootDir>/../data-schemas/$1',
     '^@src/(.*)$': '<rootDir>/src/$1',
     '~/(.*)': '<rootDir>/src/$1',
   },

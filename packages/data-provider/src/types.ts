@@ -684,3 +684,15 @@ export type TBalanceResponse = {
   lastRefill?: Date;
   refillAmount?: number;
 };
+
+export type {
+  TEncryptionSaltResponse,
+  TSetupEncryptionResponse,
+  TUnlockEncryptionRequest,
+  TUnlockEncryptionResponse,
+  TChangePassphraseRequest,
+  TChangePassphraseResponse,
+  TResetEncryptionRequest,
+  TResetEncryptionResponse,
+  TEncryptionError,
+} from './types/encryption';

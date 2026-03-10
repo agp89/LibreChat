@@ -77,5 +77,8 @@
     "schema",
     "typescript",
     "librechat"
-  ]
+  ],
+  "dependencies": {
+    "babel-plugin-replace-ts-export-assignment": "^0.0.2"
+  }
 }

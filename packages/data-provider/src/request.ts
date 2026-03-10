@@ -99,6 +99,18 @@ if (typeof window !== 'undefined') {
         return Promise.reject(error);
       }
 
+      // Handle 403 encryption_locked — dispatch event for frontend to show re-prompt (PRD §8.2)
+      if (
+        error.response.status === 403 &&
+        error.response.data?.error === 'encryption_locked' &&
+        !originalRequest.url?.includes('/api/auth/encryption')
+      ) {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('encryption_locked'));
+        }
+        return Promise.reject(error);
+      }
+
       /** Skip refresh when the Authorization header has been cleared (e.g. during logout),
        *  but allow shared link requests to proceed so auth recovery/redirect can happen */
       if (

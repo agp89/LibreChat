@@ -43,6 +43,12 @@ export interface IUser extends Document {
   updatedAt?: Date;
   /** Field for external source identification (for consistency with TPrincipal schema) */
   idOnTheSource?: string;
+  /** Encryption at rest: UEK wrapped with the user's passphrase-derived KEK */
+  encryptedUEK?: string;
+  /** Encryption at rest: PBKDF2 salt for client-side sessionSecret derivation (hex-encoded) */
+  passphraseSalt?: string;
+  /** Encryption at rest: 0 = unencrypted, 1 = enc1 passphrase-protected scheme */
+  encryptionVersion?: number;
 }
 
 export interface BalanceConfig {

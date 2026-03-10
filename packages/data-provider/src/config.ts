@@ -813,6 +813,8 @@ export type TStartupConfig = {
   >;
   mcpPlaceholder?: string;
   conversationImportMaxFileSize?: number;
+  encryptionEnabled?: boolean;
+  encryptedSearchMode?: 'fallback' | 'disabled';
 };
 
 export enum OCRStrategy {

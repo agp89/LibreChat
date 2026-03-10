@@ -17,6 +17,13 @@ const {
 const { verify2FAWithTempToken } = require('~/server/controllers/auth/TwoFactorAuthController');
 const { logoutController } = require('~/server/controllers/auth/LogoutController');
 const { loginController } = require('~/server/controllers/auth/LoginController');
+const {
+  getEncryptionSaltController,
+  setupEncryptionController,
+  unlockEncryptionController,
+  changePassphraseController,
+  resetEncryptionController,
+} = require('~/server/controllers/auth/EncryptionController');
 const { getAppConfig } = require('~/server/services/Config');
 const middleware = require('~/server/middleware');
 const { Balance } = require('~/db/models');
@@ -71,5 +78,12 @@ router.post('/2fa/disable', middleware.requireJwtAuth, disable2FA);
 router.post('/2fa/backup/regenerate', middleware.requireJwtAuth, regenerateBackupCodes);
 
 router.get('/graph-token', middleware.requireJwtAuth, graphTokenController);
+
+/* Encryption at rest */
+router.get('/encryption-salt', middleware.requireJwtAuth, getEncryptionSaltController);
+router.post('/setup-encryption', middleware.requireJwtAuth, setupEncryptionController);
+router.post('/unlock-encryption', middleware.requireJwtAuth, unlockEncryptionController);
+router.post('/change-passphrase', middleware.requireJwtAuth, changePassphraseController);
+router.post('/reset-encryption', middleware.requireJwtAuth, resetEncryptionController);
 
 module.exports = router;

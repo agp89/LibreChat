@@ -64,6 +64,9 @@ export enum QueryKeys {
   activeJobs = 'activeJobs',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
+  /* Encryption */
+  encryptionSalt = 'encryptionSalt',
+  encryptionStatus = 'encryptionStatus',
 }
 
 // Dynamic query keys that require parameters
@@ -96,4 +99,9 @@ export enum MutationKeys {
   enableTwoFactor = 'enableTwoFactor',
   verifyTwoFactor = 'verifyTwoFactor',
   updateMemoryPreferences = 'updateMemoryPreferences',
+  /* Encryption */
+  setupEncryption = 'setupEncryption',
+  unlockEncryption = 'unlockEncryption',
+  changeEncryptionPassphrase = 'changeEncryptionPassphrase',
+  resetEncryption = 'resetEncryption',
 }

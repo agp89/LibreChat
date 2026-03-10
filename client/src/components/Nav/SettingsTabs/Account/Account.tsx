@@ -1,5 +1,6 @@
 import React from 'react';
 import DisplayUsernameMessages from './DisplayUsernameMessages';
+import EncryptionSettings from './EncryptionSettings';
 import DeleteAccount from './DeleteAccount';
 import Avatar from './Avatar';
 import EnableTwoFactorItem from './TwoFactorAuthentication';
@@ -29,6 +30,9 @@ function Account() {
           )}
         </>
       )}
+      <div className="pb-3">
+        <EncryptionSettings />
+      </div>
       <div className="pb-3">
         <DeleteAccount />
       </div>

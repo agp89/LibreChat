@@ -1083,3 +1083,30 @@ export interface ActiveJobsResponse {
 export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
   return request.get(endpoints.activeJobs());
 };
+
+/* Encryption at rest */
+export function getEncryptionSalt(): Promise<t.TEncryptionSaltResponse> {
+  return request.get(endpoints.encryptionSalt());
+}
+
+export function setupEncryption(): Promise<t.TSetupEncryptionResponse> {
+  return request.post(endpoints.setupEncryption(), {});
+}
+
+export function unlockEncryption(
+  payload: t.TUnlockEncryptionRequest,
+): Promise<t.TUnlockEncryptionResponse> {
+  return request.post(endpoints.unlockEncryption(), payload);
+}
+
+export function changeEncryptionPassphrase(
+  payload: t.TChangePassphraseRequest,
+): Promise<t.TChangePassphraseResponse> {
+  return request.post(endpoints.changePassphrase(), payload);
+}
+
+export function resetEncryption(
+  payload: t.TResetEncryptionRequest,
+): Promise<t.TResetEncryptionResponse> {
+  return request.post(endpoints.resetEncryption(), payload);
+}

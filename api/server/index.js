@@ -28,6 +28,7 @@ const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { updateInterfacePermissions } = require('~/models/interface');
 const { checkMigrations } = require('./services/start/migration');
 const initializeMCPs = require('./services/initializeMCPs');
+const { encryptionContextMiddleware, requireEncryptionUnlock } = require('~/server/controllers/auth/EncryptionController');
 const configureSocialLogins = require('./socialLogins');
 const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
@@ -137,6 +138,17 @@ const startServer = async () => {
   /* API Endpoints */
   app.use('/api/auth', routes.auth);
   app.use('/api/admin', routes.adminAuth);
+  app.use('/api/admin/encryption', require('./routes/admin/encryption'));
+
+  /**
+   * Encryption context middleware: populates AsyncLocalStorage with the user's
+   * decrypted UEK so Mongoose hooks can transparently encrypt/decrypt fields.
+   * Must come after auth routes (so setup/unlock work without encryption context)
+   * and before data routes that read/write encrypted collections.
+   */
+  app.use(encryptionContextMiddleware);
+  app.use(requireEncryptionUnlock);
+
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
   app.use('/api/api-keys', routes.apiKeys);
