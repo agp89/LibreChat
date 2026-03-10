@@ -11,18 +11,14 @@
 // Must be set before module evaluation (jest.mock is hoisted, but env is read at import time)
 process.env.ENCRYPTION_MASTER_KEY = 'a'.repeat(64);
 
-/* eslint-disable @typescript-eslint/no-require-imports */
-
 jest.mock('@librechat/data-schemas', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { AsyncLocalStorage } = require('async_hooks');
-  // Ensure master key is set before encryption module captures it
+  const { AsyncLocalStorage } = require('async_hooks'); // eslint-disable-line @typescript-eslint/no-require-imports
   process.env.ENCRYPTION_MASTER_KEY = 'a'.repeat(64);
   return { encryptionStore: new AsyncLocalStorage() };
 });
 
 jest.mock('~/crypto', () => {
-  const cryptoMod = require('crypto');
+  const cryptoMod = require('crypto'); // eslint-disable-line @typescript-eslint/no-require-imports
   const ALG = 'aes-256-gcm';
   const IV_LEN = 12;
   const TAG_LEN = 16;
@@ -95,7 +91,6 @@ jest.mock('~/crypto/keyCache', () => {
     },
   };
 });
-/* eslint-enable @typescript-eslint/no-require-imports */
 
 import {
   getEncryptionSalt,

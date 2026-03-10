@@ -62,8 +62,13 @@ export default function EncryptionSettings() {
       setCurrentPass('');
       setNewPass('');
       setNewPassConfirm('');
-    } catch {
-      setChangeError(localize('com_ui_encryption_wrong_passphrase'));
+    } catch (err: unknown) {
+      const apiErr = err as { response?: { data?: { error?: string } } };
+      if (apiErr?.response?.data?.error === 'invalid_passphrase') {
+        setChangeError(localize('com_ui_encryption_wrong_passphrase'));
+      } else {
+        setChangeError(localize('com_ui_encryption_setup_error'));
+      }
     }
   };
 

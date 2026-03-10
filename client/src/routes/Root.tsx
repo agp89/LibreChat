@@ -68,8 +68,11 @@ export default function Root() {
       .then(() => {
         setShowEncryptionUnlock(true);
       })
-      .catch(() => {
-        setShowEncryptionSetup(true);
+      .catch((err: { response?: { status?: number } }) => {
+        if (err?.response?.status === 404) {
+          setShowEncryptionSetup(true);
+        }
+        // Other errors (network, 500, etc.) — skip encryption gate silently
       });
   }, [isAuthenticated, encryptionEnabled, encryptionUnlocked]);
 

@@ -1,6 +1,7 @@
 import type { Redis } from 'ioredis';
 
 const KEY_PREFIX = 'uek:';
+const SCAN_COUNT = 100;
 const DEFAULT_TTL_SEC = Math.floor(
   parseInt(process.env.ENCRYPTION_KEY_CACHE_TTL ?? '900000', 10) / 1000,
 );
@@ -41,7 +42,7 @@ export class RedisKeyCache {
     let cursor = '0';
     do {
       const [nextCursor, keys] = await this.redis.scan(
-        cursor, 'MATCH', `${KEY_PREFIX}*`, 'COUNT', '100',
+        cursor, 'MATCH', `${KEY_PREFIX}*`, 'COUNT', String(SCAN_COUNT),
       );
       cursor = nextCursor;
       count += keys.length;

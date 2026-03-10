@@ -40,7 +40,9 @@ router.get('/status', middleware.requireJwtAuth, requireAdmin, async (req, res) 
       },
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    const { logger } = require('@librechat/data-schemas');
+    logger.error('[admin/encryption/status]', err);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
