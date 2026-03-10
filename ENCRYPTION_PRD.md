@@ -1,8 +1,8 @@
 # Product Requirements Document: User Chat Data Encryption at Rest
 
-**Document Version:** 1.1
+**Document Version:** 1.2
 **Date:** 2026-03-10
-**Status:** Draft — Open Questions Resolved
+**Status:** Draft — Open Questions Resolved, Security Limitations Documented
 **Author:** Engineering Team
 
 ---
@@ -44,7 +44,9 @@
 
 LibreChat currently stores all user chat data (messages, conversation titles, file metadata, memories) as plaintext in MongoDB. For organizations with strict data-protection and legal requirements (GDPR, BDSG, HIPAA, SOC 2), this is a blocker for adoption.
 
-This PRD defines a **server-side encryption-at-rest** architecture where every piece of user-generated content is encrypted before it reaches the database. Encryption keys are derived per-user so that **only the owning user's authenticated session can decrypt their data**. The server never persists plaintext user content or long-lived decryption keys to disk.
+This PRD defines a **server-side encryption-at-rest** architecture where every piece of user-generated content is encrypted before it reaches the database. Encryption keys are derived per-user so that **database access alone is not sufficient to read user data**. The server never persists plaintext user content or long-lived decryption keys to disk.
+
+> **⚠️ Important Security Limitation:** This design is server-side encryption at rest — **not** end-to-end encryption. Because the server must decrypt data to call LLM APIs, anyone with access to both the `ENCRYPTION_MASTER_KEY` environment variable and the database can derive per-user keys and decrypt user data. This design protects against database-only breaches, unauthorized DBA access, and compromised backups. It does **not** provide absolute protection against a determined server administrator who controls both the application deployment and the database. See §5.4 for the full honest security assessment.
 
 The design integrates with the existing OpenID Connect / Azure AD authentication flow and builds on LibreChat's existing `encryptV3` (AES-256-CTR) cryptographic primitives in `packages/data-schemas/src/crypto/`.
 
@@ -61,7 +63,7 @@ The design integrates with the existing OpenID Connect / Azure AD authentication
 | Tool call results | Plaintext `result` field | Encrypted at rest |
 | Database compromise | Full exposure of all user data | Attacker obtains only ciphertext; no keys stored alongside data |
 | Regulatory compliance | Does not meet GDPR Art. 32 / BDSG §64 encryption requirements | Meets encryption-at-rest requirements for regulated industries |
-| Admin/DBA access | Full read access to all user content | No access to plaintext without user cooperation |
+| Admin/DBA access | Full read access to all user content | DBA with only DB access sees ciphertext; access requires both master key and DB access (see §5.4 for limitations) |
 
 ### Who is affected?
 
@@ -77,7 +79,7 @@ The design integrates with the existing OpenID Connect / Azure AD authentication
 
 1. **Encrypt all user-generated content at rest** in MongoDB so that a database dump or unauthorized DB access reveals no plaintext.
 2. **Per-user key isolation** — User A's key cannot decrypt User B's data.
-3. **Zero plaintext key persistence** — No long-lived decryption keys stored unencrypted on disk or in the database.
+3. **Zero plaintext key persistence** — No long-lived decryption keys stored unencrypted on disk or in the database. (Note: the wrapped UEK is stored in the database and can be unwrapped by anyone possessing the `ENCRYPTION_MASTER_KEY` — see §5.4.)
 4. **Transparent to end users** — No changes to the user experience or workflow (no passphrase prompts, no key management UI).
 5. **Compatible with OpenID Connect / Azure AD** — Key derivation integrates with existing OIDC authentication flow.
 6. **Backward compatible** — Existing unencrypted deployments can opt in and migrate incrementally.
@@ -89,9 +91,10 @@ The design integrates with the existing OpenID Connect / Azure AD authentication
 1. **End-to-end encryption (client-side)** — This PRD covers server-side encryption at rest. True E2E encryption (where the server never sees plaintext) is a future consideration but out of scope because the server must process plaintext to call LLM APIs.
 2. **Encrypting LLM API traffic** — Traffic to upstream providers (OpenAI, Azure OpenAI, Anthropic, etc.) is protected by TLS; this PRD does not add an additional encryption layer to those calls.
 3. **Encrypting non-user data** — System configuration, model parameters, endpoint settings, and agent definitions that are not user-generated content are out of scope.
-4. **Key escrow or admin recovery** — If a user's key material is lost (e.g., OIDC provider deletes the account), their encrypted data is unrecoverable by design. An optional admin-recovery mechanism is discussed as a future extension.
-5. **Homomorphic encryption for search** — Full-text search over encrypted data is a known hard problem. This PRD defines a practical approach using encrypted search indexes rather than homomorphic encryption.
-6. **Multi-party decryption** — Shared conversations are handled by re-encryption, not by multi-party key schemes.
+4. **Key escrow or admin recovery** — If a user's key material is lost (e.g., OIDC provider deletes the account), their encrypted data is unrecoverable by design. An optional admin-recovery mechanism is discussed as a future extension. (Note: An admin possessing `ENCRYPTION_MASTER_KEY` can already derive any user's key — see §5.4 for the implications.)
+5. **Protection against server operators** — This design does not protect user data from individuals who control both the application deployment (environment variables, code) and the database. True protection against server operators would require end-to-end encryption, which is architecturally incompatible with calling LLM APIs server-side. See §5.4.
+6. **Homomorphic encryption for search** — Full-text search over encrypted data is a known hard problem. This PRD defines a practical approach using encrypted search indexes rather than homomorphic encryption.
+7. **Multi-party decryption** — Shared conversations are handled by re-encryption, not by multi-party key schemes.
 
 ---
 
@@ -138,14 +141,103 @@ The design integrates with the existing OpenID Connect / Azure AD authentication
 | **External attacker with DB access** | Reads/dumps MongoDB collections | All user content is ciphertext; keys not stored in DB |
 | **Malicious DBA** | Queries collections, reads documents | Per-user encryption; DBA sees only ciphertext |
 | **Compromised backup** | Reads MongoDB backup files | Backup contains only ciphertext |
-| **Rogue server admin with env access** | Reads environment variables, server memory | KEK alone cannot decrypt without per-user UEK salt; UEK is session-scoped |
-| **Compromised application server** | Full memory access during runtime | Accepted risk — server must process plaintext for LLM calls; mitigated by short-lived key caching |
+| **Rogue server admin with env access** | Reads environment variables, server memory | **⚠️ PARTIALLY MITIGATED.** Admin with `ENCRYPTION_MASTER_KEY` + DB access CAN derive any user's KEK, unwrap their UEK, and decrypt all their data offline. See §5.4. |
+| **Compromised application server** | Full memory access during runtime | **Accepted risk** — server must process plaintext for LLM calls; mitigated by short-lived key caching. See §5.4. |
 | **Other authenticated user** | Accesses API endpoints | Per-user key isolation; authorization checks unchanged |
 
 ### 5.3 Accepted Risks
 
 - **Server-side plaintext processing**: The server must decrypt data to send it to LLM providers. A fully compromised running server can access plaintext during a user's active session. This is inherent to the architecture and mitigated by standard server hardening.
 - **Memory-resident keys**: User encryption keys exist in server memory during active sessions. Mitigated by session-scoped key caching with TTL eviction.
+- **Admin with master key + DB access**: An administrator who possesses both the `ENCRYPTION_MASTER_KEY` and database access can decrypt any user's data. This is the most significant limitation — see §5.4 for full analysis.
+
+### 5.4 Honest Security Assessment
+
+> **This section exists to prevent false confidence. Encryption architecture decisions must be based on accurate threat modeling, not on aspirational claims.**
+
+#### The Fundamental Question: Can an Admin Read User Chats?
+
+**Short answer: Yes.** An administrator who controls both the application deployment environment and the database can read any user's encrypted data.
+
+#### Why: The Key Derivation Chain Has No User Secrets
+
+The key hierarchy is:
+
+```
+ENCRYPTION_MASTER_KEY (env var, known to deployer)
+    + user._id (in database, known to DBA)
+    → KEK (derived deterministically via HKDF)
+    → unwrap encryptedUEK (stored in database User document)
+    → UEK (can now decrypt all user data)
+```
+
+**Every input to this chain is accessible to someone who controls the server environment and database.** There is no user-held secret (like a password or client-side key) in the derivation path. An admin can write a standalone script that:
+
+1. Reads `ENCRYPTION_MASTER_KEY` from the environment or `.env` file
+2. Reads a target user's `_id` and `encryptedUEK` from MongoDB
+3. Derives `KEK = HKDF(masterKey, salt=userId, info="librechat-kek")`
+4. Unwraps `UEK = decrypt(encryptedUEK, KEK)`
+5. Queries any encrypted document and decrypts it with the UEK
+
+This requires **no running application, no user session, and no user cooperation**.
+
+#### What This Design DOES Protect Against
+
+| Threat | Protected? | Explanation |
+|---|---|---|
+| **Database breach (stolen dump/backup)** | ✅ **Yes** | Attacker has only ciphertext and wrapped keys; no master key |
+| **Unauthorized DBA access** | ✅ **Yes** | DBA with only MongoDB access sees ciphertext; master key is in env vars, not DB |
+| **Cross-user access via API** | ✅ **Yes** | Application enforces per-user key isolation; User A's API requests cannot trigger decryption with User B's key |
+| **Accidental data exposure in logs** | ✅ **Yes** | Database fields contain ciphertext; accidental logging of DB queries reveals nothing |
+| **Compliance checkbox (GDPR Art. 32, HIPAA)** | ✅ **Yes** | Meets the regulatory requirement for "encryption at rest" as a technical measure |
+| **Third-party MongoDB hosting (Atlas)** | ✅ **Yes** | Cloud provider employees cannot read user data even with infrastructure access |
+| **Separation of duties (DBA ≠ DevOps)** | ✅ **Yes** | Effective when the person with DB access is different from the person with env var access |
+
+#### What This Design Does NOT Protect Against
+
+| Threat | Protected? | Explanation |
+|---|---|---|
+| **Admin with master key + DB access** | ❌ **No** | Can derive any user's UEK offline and decrypt all their data (see derivation chain above) |
+| **Server operator who modifies code** | ❌ **No** | Can add logging/exfiltration of plaintext before encryption or after decryption |
+| **Server operator who inspects process memory** | ❌ **No** | UEKs are cached in-process; memory dump reveals active users' keys |
+| **Man-in-the-middle on the server itself** | ❌ **No** | Plaintext exists in server memory between decryption and LLM API call |
+| **Compromised LLM provider** | ❌ **No** | Plaintext is sent to LLM APIs over TLS; the provider sees it (out of scope) |
+| **Single malicious admin with full access** | ❌ **No** | A single person who is both deployer and DBA can decrypt everything |
+
+#### The Architectural Constraint
+
+**True "no one but the user can read the data" protection is fundamentally impossible for a server-side AI chat application that calls external LLM APIs.** Here is why:
+
+1. The server must send plaintext messages to OpenAI/Anthropic/Azure OpenAI APIs.
+2. Therefore, the server must be able to decrypt messages.
+3. Therefore, whoever controls the server can access plaintext.
+
+This is not a flaw in the design — it is an inherent constraint of the use case. Even client-side end-to-end encryption (E2E) would not solve this, because:
+- The server would need to decrypt to call the LLM API, OR
+- The client would need to call the LLM API directly, which exposes API keys to the client and bypasses server-side rate limiting, model selection, and compliance controls.
+
+#### Practical Value Despite Limitations
+
+Despite these limitations, the encryption design provides **significant, real-world security value**:
+
+1. **Defense in depth**: Requires compromising multiple systems (env + DB) rather than just one (DB alone).
+2. **Separation of duties**: In organizations where the DBA team is separate from the DevOps team, neither can unilaterally access user data.
+3. **Compliance**: Satisfies regulatory requirements that mandate encryption at rest as a technical measure.
+4. **Breach scope reduction**: A database-only breach (the most common attack vector) reveals nothing.
+5. **Accidental exposure prevention**: Developers, support staff, and monitoring tools that interact with the database cannot accidentally see user content.
+
+#### Recommendations for Stronger Protection (Future Enhancements)
+
+For organizations that need stronger guarantees beyond encryption at rest, the following enhancements (all out of scope for this PRD) could be evaluated:
+
+| Enhancement | What It Addresses | Complexity | Trade-offs |
+|---|---|---|---|
+| **Hardware Security Module (HSM)** | Master key never leaves tamper-proof hardware; key derivation happens inside HSM | High | Cost ($1–5K/month for cloud HSM); latency; vendor lock-in |
+| **Split-key / Threshold Cryptography** | No single person holds complete key material; M-of-N quorum required | High | Operational complexity; key ceremony required |
+| **Trusted Execution Enclave (TEE)** | Plaintext processing happens in isolated memory (Intel SGX, AWS Nitro Enclaves) | Very High | Hardware requirements; significant code changes; attestation complexity |
+| **Client-side E2E with LLM proxy** | Client encrypts; dedicated proxy decrypts only for LLM calls; server never sees plaintext | Very High | Requires architectural overhaul; breaks server-side features (search, memories, agents) |
+| **Audit logging of key access** | Does not prevent access but creates accountability trail | Medium | Useful as a deterrent; helps detect misuse after the fact |
+| **Key derivation with user-held secret** | Adds user password/passphrase to HKDF input; admin cannot derive without user secret | Medium | Breaks "transparent to end users" goal; requires passphrase prompt on every session start; lost passphrase = data loss |
 
 ---
 
@@ -1090,6 +1182,8 @@ This is a low-priority enhancement and not required for the initial release.
 
 | Risk | Severity | Likelihood | Mitigation |
 |---|---|---|---|
+| **Admin with master key + DB access can decrypt user data** | Critical | Medium | This is an inherent limitation of server-side encryption (see §5.4). Mitigated by: separation of duties (DBA ≠ DevOps), audit logging, access controls on env vars, HSM for master key storage (future). Not solvable without architectural change to E2E encryption. |
+| **False sense of security** | High | Medium | PRD §5.4 explicitly documents what the design does and does not protect against. Deployment documentation must not claim "only the user can read their data" — the accurate claim is "database access alone cannot read user data". |
 | **Master key loss** | Critical | Low | Document backup procedure; require key stored in external vault (Azure Key Vault, AWS KMS, HashiCorp Vault); startup check warns if key is not backed up |
 | **Performance degradation** | Medium | Medium | UEK caching, batch decryption, lazy decryption for list views; benchmark before release |
 | **Migration data corruption** | High | Low | Idempotent migration; pre-migration backup mandatory; verification step; dry-run mode |
@@ -1385,3 +1479,4 @@ The existing `tokenCount` field on messages is already unencrypted and provides 
 | 2026-03-10 | Reject CSFLE in favor of application-layer encryption (Q5) | CSFLE requires MongoDB Atlas M10+; LibreChat supports self-hosted MongoDB; CSFLE lacks per-user keys and limits queries to equality only |
 | 2026-03-10 | Set 16 MB message size limit with 7 MB plaintext recommendation (Q6) | MongoDB BSON limit is 16 MB; hex-encoded ciphertext doubles size; 7 MB plaintext → ~15 MB ciphertext is safe margin |
 | 2026-03-10 | No changes to aggregation pipelines for Phase 1 (Q7) | All existing aggregations operate on metadata fields (categories, authors, counts), not user-generated content; zero breaking changes |
+| 2026-03-10 | Document honest security limitations (§5.4) | Server-side encryption cannot prevent admin with master key + DB access from decrypting user data; this is an inherent architectural constraint. Transparency prevents false confidence and guides organizations toward appropriate additional controls. |
