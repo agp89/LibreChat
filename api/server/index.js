@@ -28,9 +28,7 @@ const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { updateInterfacePermissions } = require('~/models/interface');
 const { checkMigrations } = require('./services/start/migration');
 const initializeMCPs = require('./services/initializeMCPs');
-const {
-  encryptionContextMiddleware,
-} = require('~/server/controllers/auth/EncryptionController');
+const { encryptionContextMiddleware } = require('~/server/controllers/auth/EncryptionController');
 const configureSocialLogins = require('./socialLogins');
 const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');

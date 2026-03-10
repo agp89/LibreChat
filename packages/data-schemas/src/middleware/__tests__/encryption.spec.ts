@@ -116,27 +116,49 @@ describe('encryption middleware', () => {
     });
   });
 
-  describe('schema field configuration (PRD §7.4)', () => {
-    it('messages: text (string) + content (jsonField)', () => {
-      // Verified by the attachEncryptionMiddleware call in models/message.ts
-      expect(['text']).toEqual(['text']);
-      expect(['content']).toEqual(['content']);
+  describe('attachEncryptionMiddleware hook registration', () => {
+    it('attaches pre-save and post hooks when ENCRYPT_USER_DATA is true', () => {
+      // Save original env and set to true for this test
+      const orig = process.env.ENCRYPT_USER_DATA;
+      process.env.ENCRYPT_USER_DATA = 'true';
+
+      // Re-import to pick up the new env value
+      jest.resetModules();
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { attachEncryptionMiddleware: attach } = require('~/middleware/encryption');
+      const { Schema } = require('mongoose');
+
+      const schema = new Schema({ text: String, encryptionVersion: Number });
+      attach(schema, { fields: ['text'] });
+
+      // Mongoose stores hooks in schema.s.hooks
+      const hooks = (schema as Record<string, Record<string, Record<string, unknown[]>>>).s.hooks;
+      expect(hooks._pres.get('save')).toBeDefined();
+      expect(hooks._pres.get('findOneAndUpdate')).toBeDefined();
+      expect(hooks._posts.get('find')).toBeDefined();
+      expect(hooks._posts.get('findOne')).toBeDefined();
+      expect(hooks._posts.get('findOneAndUpdate')).toBeDefined();
+
+      process.env.ENCRYPT_USER_DATA = orig ?? '';
     });
 
-    it('conversations: title, system, promptPrefix (strings)', () => {
-      expect(['title', 'system', 'promptPrefix']).toEqual(['title', 'system', 'promptPrefix']);
-    });
+    it('does not attach hooks when ENCRYPT_USER_DATA is false', () => {
+      const orig = process.env.ENCRYPT_USER_DATA;
+      process.env.ENCRYPT_USER_DATA = 'false';
 
-    it('files: text (string)', () => {
-      expect(['text']).toEqual(['text']);
-    });
+      jest.resetModules();
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { attachEncryptionMiddleware: attach } = require('~/middleware/encryption');
+      const { Schema } = require('mongoose');
 
-    it('memories: value, key (strings)', () => {
-      expect(['value', 'key']).toEqual(['value', 'key']);
-    });
+      const schema = new Schema({ text: String, encryptionVersion: Number });
+      const preSaveBefore = (schema as Record<string, Record<string, Record<string, unknown[]>>>).s.hooks._pres.get('save')?.length ?? 0;
+      attach(schema, { fields: ['text'] });
+      const preSaveAfter = (schema as Record<string, Record<string, Record<string, unknown[]>>>).s.hooks._pres.get('save')?.length ?? 0;
 
-    it('toolcalls: result (jsonField)', () => {
-      expect(['result']).toEqual(['result']);
+      expect(preSaveAfter).toBe(preSaveBefore);
+
+      process.env.ENCRYPT_USER_DATA = orig ?? '';
     });
   });
 });

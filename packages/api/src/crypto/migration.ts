@@ -1,19 +1,6 @@
 import type { FilterQuery, Model, Document } from 'mongoose';
 import { encryptUserData, isEncrypted } from '~/crypto';
 
-/**
- * Lazy logger: uses @librechat/data-schemas logger if available, falls back to console.
- * This avoids a hard dependency on the built package in test environments.
- */
-const logger = (() => {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require('@librechat/data-schemas').logger ?? console;
-  } catch {
-    return console;
-  }
-})() as Pick<Console, 'info' | 'warn' | 'error'>;
-
 const DEFAULT_BATCH_SIZE = 100;
 
 export interface MigrationReport {
@@ -87,29 +74,38 @@ async function migrateCollection(
   batchSize: number,
   dryRun: boolean,
 ): Promise<{ total: number; encrypted: number; skipped: number; errors: number }> {
-  const filter: FilterQuery<Document> = {
+  const baseFilter: FilterQuery<Document> = {
     [config.userField]: userId,
     $or: [{ encryptionVersion: { $exists: false } }, { encryptionVersion: 0 }],
   };
 
   const allFields = [...config.fields, ...config.jsonFields];
-  const total = await model.countDocuments(filter);
+  const total = await model.countDocuments(baseFilter);
   let encrypted = 0;
   let skipped = 0;
   let errors = 0;
-  let processed = 0;
 
-  while (processed < total) {
+  /** Cursor-based pagination: track the last processed _id to avoid re-scanning. */
+  let lastId: unknown = null;
+
+  for (;;) {
+    const filter: FilterQuery<Document> = lastId
+      ? { ...baseFilter, _id: { $gt: lastId } }
+      : baseFilter;
+
     const docs = await model
       .find(filter)
+      .sort({ _id: 1 })
       .limit(batchSize)
       .lean();
 
     if (docs.length === 0) break;
 
     for (const doc of docs) {
+      const record = doc as unknown as Record<string, unknown>;
+      lastId = record['_id'];
+
       try {
-        const record = doc as unknown as Record<string, unknown>;
         const hasData = allFields.some((f) => record[f] != null);
 
         if (!hasData) {
@@ -120,7 +116,6 @@ async function migrateCollection(
             );
           }
           skipped++;
-          processed++;
           continue;
         }
 
@@ -137,10 +132,9 @@ async function migrateCollection(
         }
         encrypted++;
       } catch (err) {
-        logger.error(`[migrateUserData] Error encrypting doc ${String((doc as Record<string, unknown>)['_id'])} in ${config.modelName}:`, err);
+        console.error(`[migrateUserData] Error encrypting doc ${String((doc as Record<string, unknown>)['_id'])} in ${config.modelName}:`, err);
         errors++;
       }
-      processed++;
     }
   }
 
@@ -179,13 +173,13 @@ export async function migrateUserDataOnSetup(
   for (const config of configs) {
     const model = mongoose.models[config.modelName] as Model<Document> | undefined;
     if (!model) {
-      logger.warn(`[migrateUserData] Model ${config.modelName} not registered, skipping.`);
+      console.warn(`[migrateUserData] Model ${config.modelName} not registered, skipping.`);
       continue;
     }
 
     const result = await migrateCollection(model, config, userId, uek, batchSize, dryRun);
     report.collections[config.modelName] = result;
-    logger.info(
+    console.info(
       `[migrateUserData] ${dryRun ? '(dry-run) ' : ''}${config.modelName}: ` +
       `${result.encrypted} encrypted, ${result.skipped} skipped, ${result.errors} errors ` +
       `(of ${result.total} total) for user ${userId}`,

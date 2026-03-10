@@ -55,8 +55,10 @@ function createMockModel(
   const model = {
     countDocuments: jest.fn().mockResolvedValue(docs.length),
     find: jest.fn().mockReturnValue({
-      limit: jest.fn().mockReturnValue({
-        lean: jest.fn().mockResolvedValueOnce(docs).mockResolvedValue([]),
+      sort: jest.fn().mockReturnValue({
+        limit: jest.fn().mockReturnValue({
+          lean: jest.fn().mockResolvedValueOnce(docs).mockResolvedValue([]),
+        }),
       }),
     }),
     updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
