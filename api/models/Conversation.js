@@ -186,18 +186,47 @@ module.exports = {
     filters.push({ $or: [{ expiredAt: null }, { expiredAt: { $exists: false } }] });
 
     if (search) {
-      try {
-        const meiliResults = await Conversation.meiliSearch(search, { filter: `user = "${user}"` });
-        const matchingIds = Array.isArray(meiliResults.hits)
-          ? meiliResults.hits.map((result) => result.conversationId)
-          : [];
-        if (!matchingIds.length) {
-          return { conversations: [], nextCursor: null };
+      // When encryption is active, MeiliSearch indexes contain ciphertext.
+      // Use MongoDB-based fallback search: fetch conversations, decrypt titles
+      // in-memory (via Mongoose middleware), and filter by search term (PRD §7.7).
+      const encryptionActive = process.env.ENCRYPT_USER_DATA === 'true';
+      if (encryptionActive) {
+        try {
+          const maxBatch = parseInt(process.env.SEARCH_MAX_DECRYPT_BATCH || '500', 10);
+          const baseQuery = filters.length === 1 ? filters[0] : { $and: filters };
+          const allConvos = await Conversation.find(baseQuery)
+            .select('conversationId title')
+            .sort({ updatedAt: -1 })
+            .limit(maxBatch)
+            .lean();
+
+          const searchLower = search.toLowerCase();
+          const matchingIds = allConvos
+            .filter((c) => c.title && c.title.toLowerCase().includes(searchLower))
+            .map((c) => c.conversationId);
+
+          if (!matchingIds.length) {
+            return { conversations: [], nextCursor: null };
+          }
+          filters.push({ conversationId: { $in: matchingIds } });
+        } catch (error) {
+          logger.error('[getConvosByCursor] Error during encrypted search fallback', error);
+          throw new Error('Error during encrypted search fallback');
         }
-        filters.push({ conversationId: { $in: matchingIds } });
-      } catch (error) {
-        logger.error('[getConvosByCursor] Error during meiliSearch', error);
-        throw new Error('Error during meiliSearch');
+      } else {
+        try {
+          const meiliResults = await Conversation.meiliSearch(search, { filter: `user = "${user}"` });
+          const matchingIds = Array.isArray(meiliResults.hits)
+            ? meiliResults.hits.map((result) => result.conversationId)
+            : [];
+          if (!matchingIds.length) {
+            return { conversations: [], nextCursor: null };
+          }
+          filters.push({ conversationId: { $in: matchingIds } });
+        } catch (error) {
+          logger.error('[getConvosByCursor] Error during meiliSearch', error);
+          throw new Error('Error during meiliSearch');
+        }
       }
     }
 

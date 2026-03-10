@@ -76,6 +76,17 @@ export default function Root() {
       });
   }, [isAuthenticated, encryptionEnabled, encryptionUnlocked]);
 
+  // Listen for 403 encryption_locked events → re-show passphrase prompt (PRD §8.2)
+  useEffect(() => {
+    if (!encryptionEnabled) return;
+    const handler = () => {
+      setEncryptionUnlocked(false);
+      setShowEncryptionUnlock(true);
+    };
+    window.addEventListener('encryption_locked', handler);
+    return () => window.removeEventListener('encryption_locked', handler);
+  }, [encryptionEnabled, setEncryptionUnlocked]);
+
   useEffect(() => {
     if (termsData) {
       setShowTerms(!termsData.termsAccepted);

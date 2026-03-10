@@ -28,7 +28,7 @@ const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { updateInterfacePermissions } = require('~/models/interface');
 const { checkMigrations } = require('./services/start/migration');
 const initializeMCPs = require('./services/initializeMCPs');
-const { encryptionContextMiddleware } = require('~/server/controllers/auth/EncryptionController');
+const { encryptionContextMiddleware, requireEncryptionUnlock } = require('~/server/controllers/auth/EncryptionController');
 const configureSocialLogins = require('./socialLogins');
 const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
@@ -147,6 +147,7 @@ const startServer = async () => {
    * and before data routes that read/write encrypted collections.
    */
   app.use(encryptionContextMiddleware);
+  app.use(requireEncryptionUnlock);
 
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);

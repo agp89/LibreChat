@@ -2,6 +2,8 @@ import { nanoid } from 'nanoid';
 import { Constants } from 'librechat-data-provider';
 import type { FilterQuery, Model } from 'mongoose';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
+import { encryptionStore } from '~/middleware/encryptionContext';
+import { decryptUserData, isEncrypted } from '~/crypto/userEncryption';
 import type * as t from '~/types';
 import logger from '~/config/winston';
 
@@ -161,6 +163,36 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
   async function getSharedMessages(shareId: string): Promise<t.SharedMessagesResult | null> {
     try {
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
+
+      // First check if there are plaintext snapshots (encrypted deployment, PRD §7.8)
+      const shareWithSnapshots = (await SharedLink.findOne({ shareId, isPublic: true })
+        .select('+messageSnapshots -__v -user')
+        .lean()) as (t.ISharedLink & { messageSnapshots?: Record<string, unknown>[] }) | null;
+
+      if (!shareWithSnapshots?.conversationId || !shareWithSnapshots.isPublic) {
+        return null;
+      }
+
+      // If snapshots exist, use them (messages are plaintext copies)
+      if (shareWithSnapshots.messageSnapshots && shareWithSnapshots.messageSnapshots.length > 0) {
+        let messagesToShare = shareWithSnapshots.messageSnapshots as unknown as t.IMessage[];
+        if (shareWithSnapshots.targetMessageId) {
+          messagesToShare = getMessagesUpToTarget(messagesToShare, shareWithSnapshots.targetMessageId);
+        }
+
+        const newConvoId = anonymizeConvoId(shareWithSnapshots.conversationId);
+        return {
+          shareId: shareWithSnapshots.shareId || shareId,
+          title: shareWithSnapshots.title,
+          isPublic: shareWithSnapshots.isPublic,
+          createdAt: shareWithSnapshots.createdAt,
+          updatedAt: shareWithSnapshots.updatedAt,
+          conversationId: newConvoId,
+          messages: anonymizeMessages(messagesToShare, newConvoId),
+        };
+      }
+
+      // Fallback: populate message references (non-encrypted deployment)
       const share = (await SharedLink.findOne({ shareId, isPublic: true })
         .populate({
           path: 'messages',
@@ -400,12 +432,57 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
 
       const title = conversation.title || 'Untitled';
 
+      // When encryption is active, store plaintext message snapshots (PRD §7.8).
+      // The owner's UEK is available via encryptionStore during share creation.
+      const encCtx = encryptionStore.getStore();
+      let messageSnapshots: Record<string, unknown>[] | undefined;
+
+      if (encCtx?.uek) {
+        const decryptedMessages = (conversationMessages as Record<string, unknown>[]).map(
+          (msg) => {
+            const decrypted = { ...msg };
+            for (const field of ['text']) {
+              if (typeof decrypted[field] === 'string' && isEncrypted(decrypted[field])) {
+                try {
+                  decrypted[field] = decryptUserData(decrypted[field] as string, encCtx.uek);
+                } catch {
+                  // Leave as-is if decryption fails
+                }
+              }
+            }
+            if (decrypted['content'] != null && typeof decrypted['content'] === 'string' && isEncrypted(decrypted['content'])) {
+              try {
+                decrypted['content'] = JSON.parse(decryptUserData(decrypted['content'] as string, encCtx.uek));
+              } catch {
+                // Leave as-is
+              }
+            }
+            // Strip user field for privacy
+            delete decrypted['user'];
+            delete decrypted['__v'];
+            return decrypted;
+          },
+        );
+        messageSnapshots = decryptedMessages;
+      }
+
+      // Decrypt title if encrypted
+      let plainTitle = title;
+      if (encCtx?.uek && typeof title === 'string' && isEncrypted(title)) {
+        try {
+          plainTitle = decryptUserData(title, encCtx.uek);
+        } catch {
+          // Use encrypted title as fallback
+        }
+      }
+
       const shareId = nanoid();
       await SharedLink.create({
         shareId,
         conversationId,
         messages: conversationMessages,
-        title,
+        ...(messageSnapshots ? { messageSnapshots } : {}),
+        title: plainTitle,
         user,
         ...(targetMessageId && { targetMessageId }),
       });

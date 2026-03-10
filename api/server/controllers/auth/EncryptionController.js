@@ -136,6 +136,36 @@ const encryptionContextMiddleware = (req, res, next) => {
   encryptionStore.run({ uek, userId }, next);
 };
 
+/**
+ * Express middleware that returns 403 `encryption_locked` when the user has
+ * set up encryption but their UEK is not currently cached (session expired
+ * or not yet unlocked). This signals the frontend to re-prompt for the
+ * passphrase (PRD §8.2).
+ *
+ * Skipped for:
+ *  - Requests when ENCRYPT_USER_DATA is false
+ *  - Unauthenticated requests (no req.user)
+ *  - Users who have not yet set up encryption (encryptionVersion !== 1)
+ */
+const requireEncryptionUnlock = async (req, res, next) => {
+  if (!ENCRYPTION_ENABLED || !req.user) return next();
+  const userId = String(req.user.id);
+  const uek = userKeyCache.getUEK(userId);
+  if (uek) return next();
+
+  // Check if user has encryption configured (has a wrapped UEK)
+  try {
+    const User = require('mongoose').models.User;
+    if (!User) return next();
+    const user = await User.findById(userId).select('encryptionVersion').lean();
+    if (!user || user.encryptionVersion !== 1) return next();
+  } catch {
+    return next();
+  }
+
+  return res.status(403).json({ error: 'encryption_locked' });
+};
+
 module.exports = {
   getEncryptionSaltController,
   setupEncryptionController,
@@ -143,4 +173,5 @@ module.exports = {
   changePassphraseController,
   resetEncryptionController,
   encryptionContextMiddleware,
+  requireEncryptionUnlock,
 };

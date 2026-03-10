@@ -9,6 +9,7 @@ import {
   decryptUserData,
   isEncrypted,
 } from '~/crypto';
+import { migrateUserDataOnSetup } from '~/crypto/migration';
 import { userKeyCache } from '~/crypto/keyCache';
 import type { IUser } from '@librechat/data-schemas';
 
@@ -168,8 +169,10 @@ export async function unlockEncryption(
   const user = await User.findById(userId).select('+encryptedUEK +passphraseSalt').lean<IUser>();
 
   let uek: Buffer;
+  let isFirstUnlock = false;
   if (!user?.encryptedUEK) {
     // First unlock after setup-encryption — generate and wrap a new UEK
+    isFirstUnlock = true;
     uek = generateUEK();
     const wrappedUEK = wrapUEK(uek, kek);
     await User.findByIdAndUpdate(userId, {
@@ -190,6 +193,14 @@ export async function unlockEncryption(
 
   clearFailures(userId);
   userKeyCache.setUEK(userId, uek);
+
+  // On first unlock, migrate existing plaintext data asynchronously (fire-and-forget)
+  if (isFirstUnlock) {
+    migrateUserDataOnSetup(mongoose, userId, uek).catch((err) => {
+      console.error(`[unlockEncryption] Migration failed for user ${userId}:`, err);
+    });
+  }
+
   return { status: 'encryption_active' };
 }
 
